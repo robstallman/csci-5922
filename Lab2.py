@@ -309,6 +309,8 @@ def plot_loss_acc(training_curve):
     plt.tight_layout()
     plt.show()
 
+
+# Define a function to save models
 def save_model(model: nn.Module, name: str):
     # Create a directory for models if it doesn't yet exist
     if not os.path.exists("models"):
@@ -411,9 +413,9 @@ class BaselineDeepNetwork(nn.Module):
 
         # Layer 5
         x = self.linear5(x)
-        x = tanh(x)
+        output = softmax(x)
 
-        return x
+        return output
 
     def backward(self, loss: torch.tensor, lr: float = 0.1) -> None:
         # Reset parameter gradients
