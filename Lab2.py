@@ -341,7 +341,7 @@ torch.save(model.state_dict(), "baseline_shallow_model.pt")
 plot_loss_acc(training_curve)
 
 
-# %% ----- Building a Baseline Deep Network -----
+# %% ----- Building a Baseline Deep Network: Definitions -----
 
 
 # Define ReLU activation function
@@ -447,7 +447,7 @@ class BaselineDeepNetwork(nn.Module):
         self.linear5.bias.data -= lr * self.linear5.bias.grad
 
 
-# %%
+# %% ----- Building a Baseline Deep Network: Training -----
 # Create an instance of the model
 model = BaselineDeepNetwork().to(device)
 
