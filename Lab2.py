@@ -11,8 +11,7 @@ from torchvision import datasets
 from torch.utils.data import DataLoader
 
 # Run on Colab
-colab = False
-if colab:
+if os.getcwd() == "/content":
     from google.colab import drive
 
     drive.mount("/content/drive")
@@ -76,7 +75,7 @@ train_set = torchvision.datasets.CIFAR100(root="./data", train=True, download=Tr
 test_set  = torchvision.datasets.CIFAR100(root="./data", train=False, download=True, transform=tfms)
 
 # Divide datasets into mini-batches
-batch_size = 128
+batch_size = 1
 train_loader = DataLoader(train_set, batch_size=batch_size, shuffle=True)
 test_loader  = DataLoader(test_set,  batch_size=batch_size, shuffle=False)
 
@@ -114,6 +113,7 @@ class TwoLayerNetwork(nn.Module):
         self.input_size = input_size
         self.hidden_size = hidden_size
         self.n_classes = n_classes
+        self.first_pass = True
 
         # Define all layers in the model
         # layer 1
@@ -134,7 +134,7 @@ class TwoLayerNetwork(nn.Module):
         output = softmax(linear3)
         return output
 
-    def backward(self, loss: torch.tensor, lr: float = 0.1):
+    def backward(self, loss: torch.tensor, lr: float = 0.1, alpha: float = 0.0):
         # Reset parameter gradients
         self.linear1.weight.grad = None
         self.linear1.bias.grad = None
@@ -147,12 +147,26 @@ class TwoLayerNetwork(nn.Module):
         loss.backward()
 
         # Update parameters
-        self.linear1.weight.data -= lr * self.linear1.weight.grad
-        self.linear1.bias.data -= lr * self.linear1.bias.grad
-        self.linear2.weight.data -= lr * self.linear2.weight.grad
-        self.linear2.bias.data -= lr * self.linear2.bias.grad
-        self.linear3.weight.data -= lr * self.linear3.weight.grad
-        self.linear3.bias.data -= lr * self.linear3.bias.grad
+        self.update_parameter(self.linear1.weight, lr=lr, alpha=alpha)
+        self.update_parameter(self.linear1.bias, lr=lr, alpha=alpha)
+        self.update_parameter(self.linear2.weight, lr=lr, alpha=alpha)
+        self.update_parameter(self.linear2.bias, lr=lr, alpha=alpha)
+        self.update_parameter(self.linear3.weight, lr=lr, alpha=alpha)
+        self.update_parameter(self.linear3.bias, lr=lr, alpha=alpha)
+
+    def update_parameter(self, parameter, lr, alpha):
+        # Start-up logic
+        if self.first_pass:
+            m = 0
+            self.first_pass = False
+        else:
+            m = parameter.data
+
+        # Modify the gradient with momentum
+        grad = m * alpha + parameter.grad
+
+        # Update the parameter
+        grad.data -= lr * grad
 
 
 # Define a function to evaluate a single epoch
@@ -162,6 +176,7 @@ def run_epoch(
     device: torch.device,
     train: bool = True,
     lr: float = 0.1,
+    alpha: float = 0.0,
 ) -> tuple[torch.tensor, torch.tensor]:
     # Make sure we're on the correct device
     model = model.to(device)
@@ -192,7 +207,7 @@ def run_epoch(
 
             # -- Backward pass -- #
             if train:
-                model.backward(loss, lr)
+                model.backward(loss, lr, alpha)
 
             # Update running counts for loss and accuracy
             loss += loss.item()
@@ -215,10 +230,11 @@ def train_model(
     device: torch.device,
     lr: int = 0.1,
     n_epochs: int = 1000,
-    print_every: int = 50,
+    print_every: int = 25,
     early_stopping: bool = True,
-    patience: int = 5000,
+    patience: int = 50,
     min_delta: float = 1e-2,
+    alpha: float = 0.0,
 ):
     # Lists for storing epochs, losses, and accuracies
     epochs = []
@@ -237,12 +253,22 @@ def train_model(
     for epoch in range(n_epochs):
         # Training over epoch
         train_loss, train_acc = run_epoch(
-            model=model, loader=train_loader, device=device, train=True, lr=lr
+            model=model,
+            loader=train_loader,
+            device=device,
+            train=True,
+            lr=lr,
+            alpha=alpha,
         )
 
         # Testing over epoch
         test_loss, test_acc = run_epoch(
-            model=model, loader=test_loader, device=device, train=False, lr=lr
+            model=model,
+            loader=test_loader,
+            device=device,
+            train=False,
+            lr=lr,
+            alpha=alpha,
         )
 
         # Save losses and accuracies for this epoch
@@ -357,8 +383,6 @@ model, training_curve = train_model(
     train_loader=train_loader,
     test_loader=test_loader,
     device=device,
-    lr=0.1,
-    n_epochs=6,
     print_every=2,
 )
 
@@ -375,26 +399,21 @@ plot_loss_acc(training_curve)
 
 # %% ----- Building a Baseline Deep Network: Definitions -----
 
-
-# Define ReLU activation function
-def ReLU(z: torch.tensor) -> torch.tensor:
-    return torch.clamp(z, min=0)
-
-
-# Define tanh activation function
-def tanh(x: torch.tensor) -> torch.tensor:
-    pos_exp = torch.exp(x)
-    neg_exp = torch.exp(-x)
-    return (pos_exp - neg_exp) / (pos_exp + neg_exp)
-
-
 # Define a baseline network for deep learning
 class BaselineDeepNetwork(nn.Module):
-    def __init__(self, input_size: int = 3072, n_classes: int = 100):
+
+    def __init__(
+        self,
+        input_size: int = 3072,
+        n_classes: int = 100,
+        activation_function: function = sigmoid,
+    ):
         super(BaselineDeepNetwork, self).__init__()
 
         self.input_size = input_size
         self.n_classes = n_classes
+        self.activation_fn = activation_function
+        self.first_pass = True  # For SGD with momentum
 
         # -- Layer Definitions -- #
         # layer 1
@@ -425,23 +444,23 @@ class BaselineDeepNetwork(nn.Module):
     def forward(self, x: torch.tensor) -> torch.tensor:
         # Layer 1
         x = self.conv1(x)
-        x = sigmoid(x)
+        x = self.activation_fn(x)
         x = self.pool1(x)
 
         # Layer 2
         x = self.conv2(x)
-        x = sigmoid(x)
+        x = self.activation_fn(x)
         x = self.pool2(x)
 
         # Layer 3
         x = self.conv3(x)
-        x = sigmoid(x)
+        x = self.activation_fn(x)
         x = self.pool3(x)
 
         # Layer 4
         x = x.view(x.size(0), -1)  # flatten
         x = self.linear4(x)
-        x = sigmoid(x)
+        x = self.activation_fn(x)
 
         # Layer 5
         x = self.linear5(x)
@@ -449,7 +468,7 @@ class BaselineDeepNetwork(nn.Module):
 
         return output
 
-    def backward(self, loss: torch.tensor, lr: float = 0.1) -> None:
+    def backward(self, loss: torch.tensor, lr: float = 0.1, alpha: float = 0.0) -> None:
         # Reset parameter gradients
         # NOTE: No learnable parameters for activation functions or pooling layers
         self.conv1.weight.grad = None
@@ -467,16 +486,30 @@ class BaselineDeepNetwork(nn.Module):
         loss.backward()
 
         # Update parameters
-        self.conv1.weight.data -= lr * self.conv1.weight.grad
-        self.conv1.bias.data -= lr * self.conv1.bias.grad
-        self.conv2.weight.data -= lr * self.conv2.weight.grad
-        self.conv2.bias.data -= lr * self.conv2.bias.grad
-        self.conv3.weight.data -= lr * self.conv3.weight.grad
-        self.conv3.bias.data -= lr * self.conv3.bias.grad
-        self.linear4.weight.data -= lr * self.linear4.weight.grad
-        self.linear4.bias.data -= lr * self.linear4.bias.grad
-        self.linear5.weight.data -= lr * self.linear5.weight.grad
-        self.linear5.bias.data -= lr * self.linear5.bias.grad
+        self.update_parameter(self.conv1.weight, lr=lr, alpha=alpha)
+        self.update_parameter(self.conv1.bias, lr=lr, alpha=alpha)
+        self.update_parameter(self.conv2.weight, lr=lr, alpha=alpha)
+        self.update_parameter(self.conv2.bias, lr=lr, alpha=alpha)
+        self.update_parameter(self.conv3.weight, lr=lr, alpha=alpha)
+        self.update_parameter(self.conv3.bias, lr=lr, alpha=alpha)
+        self.update_parameter(self.linear4.weight, lr=lr, alpha=alpha)
+        self.update_parameter(self.linear4.bias, lr=lr, alpha=alpha)
+        self.update_parameter(self.linear5.weight, lr=lr, alpha=alpha)
+        self.update_parameter(self.linear5.bias, lr=lr, alpha=alpha)
+
+    def update_parameter(self, parameter, lr, alpha):
+        # Start-up logic
+        if self.first_pass:
+            m = 0
+            self.first_pass = False
+        else:
+            m = parameter.data
+
+        # Modify the gradient with momentum
+        grad = m * alpha + parameter.grad
+
+        # Update the parameter
+        grad.data -= lr * grad
 
 
 # %% ----- Building a Baseline Deep Network: Training -----
@@ -485,13 +518,7 @@ model = BaselineDeepNetwork().to(device)
 
 # Train the model
 model, training_curve = train_model(
-    model=model,
-    train_loader=train_loader,
-    test_loader=test_loader,
-    device=device,
-    lr=0.1,
-    n_epochs=6,
-    print_every=2,
+    model=model, train_loader=train_loader, test_loader=test_loader, device=device
 )
 
 # Save the trained model
@@ -505,3 +532,105 @@ save_model(
 plot_loss_acc(training_curve)
 
 # %%
+############
+## Part 2 ##
+############
+
+# %% ----- Activation Functions: Definitions -----
+
+
+# Define ReLU activation function
+def ReLU(z: torch.tensor) -> torch.tensor:
+    return torch.clamp(z, min=0)
+
+
+# Define Leaky ReLU activation function
+def leaky_ReLU(z: torch.tensor) -> torch.tensor:
+    return torch.clamp(z, min=0.1 * z)
+
+
+# Define tanh activation function
+def tanh(x: torch.tensor) -> torch.tensor:
+    pos_exp = torch.exp(x)
+    neg_exp = torch.exp(-x)
+    return (pos_exp - neg_exp) / (pos_exp + neg_exp)
+
+
+# Define SiLU activation function
+def SiLU(z: torch.tensor) -> torch.tensor:
+    return z * sigmoid(z)
+
+
+# %% ----- Activation Functions: Training (Pt 1) -----
+
+# Define a modified deep network, replacing the sigmoid activation function with tanh
+model = BaselineDeepNetwork(activation_function=tanh).to(device)
+
+# Train the model
+model, training_curve = train_model(
+    model=model, train_loader=train_loader, test_loader=test_loader, device=device
+)
+
+# Save the trained model
+save_model(
+    model=model,
+    training_curve=training_curve,
+    name="tanh_deep_model",
+    root_path=root_path,
+)
+
+plot_loss_acc(training_curve)
+
+# %% ----- Activation Functions: Training (Pt 2) -----
+
+# Define a modified deep network, replacing the sigmoid activation function with SiLU
+model = BaselineDeepNetwork(activation_function=SiLU).to(device)
+
+# Train the model
+model, training_curve = train_model(
+    model=model, train_loader=train_loader, test_loader=test_loader, device=device
+)
+
+# Save the trained model
+save_model(
+    model=model,
+    training_curve=training_curve,
+    name="silu_deep_model",
+    root_path=root_path,
+)
+
+plot_loss_acc(training_curve)
+
+# %% ----- Optimizers: Mini-batch SGD -----
+# CIFAR-100 has 50,000 training examples, so we can experiment with some large batch sizes
+batch_sizes = [64, 256, 1024]
+
+# Train the best-performing deep network using mini-batch SGD with each batch size
+for batch_size in batch_sizes:
+    loader_train = DataLoader(train_set, batch_size=batch_size, shuffle=True)
+    loader_test = DataLoader(test_set, batch_size=batch_size, shuffle=False)
+    print(
+        f"Training loader created with batch size: {batch_size}, "
+        f"resulting in {len(loader_train)} mini-batches."
+    )
+
+    # TODO: Find best activation function model
+    # Define our model
+    model = BaselineDeepNetwork(activation_function=SiLU).to(device)
+
+    # Train the model
+    model, training_curve = train_model(
+        model=model, train_loader=loader_train, test_loader=loader_test, device=device
+    )
+
+    # Save the trained model
+    save_model(
+        model=model,
+        training_curve=training_curve,
+        name=f"silu_deep_model_b={batch_size}",  # TODO: CHANGE ME! I should be named after the model with the best activation function
+        root_path=root_path,
+    )
+
+    plot_loss_acc(training_curve)
+
+# %% ----- Optimizers: Mini-batch SGD with Momentum -----
