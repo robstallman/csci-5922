@@ -224,3 +224,4 @@ __marimo__/
 ##########
 data/
 models/
+training_curves

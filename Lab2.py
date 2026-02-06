@@ -2,6 +2,7 @@
 import copy
 import matplotlib.pyplot as plt
 import os
+import pandas as pd
 import torch
 import torch.nn as nn
 import torchvision
@@ -9,6 +10,17 @@ import torchvision.transforms.v2 as v2
 from torchvision import datasets
 from torch.utils.data import DataLoader
 
+# Run on Colab
+colab = False
+if colab:
+    from google.colab import drive
+
+    drive.mount("/content/drive")
+    root_path = "/content/drive/My Drive/Colab Notebooks/CSCI 5922/"
+else:
+    root_path = os.getcwd()
+
+# Run on GPU
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 # %%
@@ -304,6 +316,7 @@ def plot_loss_acc(training_curve):
     ax[1].set_title('Training Accuracy Over Epochs')
     ax[1].set_xlabel('Epochs')
     ax[1].set_ylabel('Accuracy')
+    ax[1].grid(True)
     ax[1].legend()
 
     plt.tight_layout()
@@ -311,14 +324,28 @@ def plot_loss_acc(training_curve):
 
 
 # Define a function to save models
-def save_model(model: nn.Module, name: str):
+def save_model(
+    model: nn.Module, training_curve: dict, name: str, root_path: str = root_path
+):
     # Create a directory for models if it doesn't yet exist
-    if not os.path.exists("models"):
-        os.mkdir("models")
+    if not os.path.exists(os.path.join(root_path, "models")):
+        os.mkdir(os.path.join(root_path, "models"))
+
+    # Create a directory for models if it doesn't yet exist
+    if not os.path.exists(os.path.join(root_path, "training_curves")):
+        os.mkdir(os.path.join(root_path, "training_curves"))
 
     # Save the model to the directory
-    filepath = os.path.join("models", f"{name}.pt")
+    filepath = os.path.join(root_path, "models", f"{name}.pt")
     torch.save(model.state_dict(), filepath)
+    print(f"Model saved to: {filepath}")
+
+    # Save the training curve as a csv
+    df = pd.DataFrame(training_curve)
+    filepath = os.path.join(root_path, "training_curves", f"{name}.csv")
+    df.to_csv(filepath)
+    print(f"Training curve saved to: {filepath}")
+
 
 # %% ----- Evaluating the Dataset Difficulty: Training -----
 # Create an instance of the model
@@ -336,7 +363,12 @@ model, training_curve = train_model(
 )
 
 # Save the trained model
-torch.save(model.state_dict(), "baseline_shallow_model.pt")
+save_model(
+    model=model,
+    training_curve=training_curve,
+    name="baseline_shallow_model",
+    root_path=root_path,
+)
 
 plot_loss_acc(training_curve)
 
@@ -463,7 +495,12 @@ model, training_curve = train_model(
 )
 
 # Save the trained model
-torch.save(model.state_dict(), "baseline_deep_model.pt")
+save_model(
+    model=model,
+    training_curve=training_curve,
+    name="baseline_deep_model",
+    root_path=root_path,
+)
 
 plot_loss_acc(training_curve)
 
