@@ -397,7 +397,7 @@ save_model(
     root_path=root_path,
 )
 
-plot_loss_acc(training_curve)
+# plot_loss_acc(training_curve)
 
 
 # %% ----- Building a Baseline Deep Network: Definitions -----
@@ -532,7 +532,7 @@ save_model(
     root_path=root_path,
 )
 
-plot_loss_acc(training_curve)
+# plot_loss_acc(training_curve)
 
 # %%
 ############
@@ -582,7 +582,7 @@ save_model(
     root_path=root_path,
 )
 
-plot_loss_acc(training_curve)
+# plot_loss_acc(training_curve)
 
 # %% ----- Activation Functions: Training (Pt 2) -----
 
@@ -602,38 +602,38 @@ save_model(
     root_path=root_path,
 )
 
-plot_loss_acc(training_curve)
+# plot_loss_acc(training_curve)
 
 # %% ----- Optimizers: Mini-batch SGD -----
-# CIFAR-100 has 50,000 training examples, so we can experiment with some large batch sizes
-batch_sizes = [64, 256, 1024]
+# # CIFAR-100 has 50,000 training examples, so we can experiment with some large batch sizes
+# batch_sizes = [64, 256, 1024]
 
-# Train the best-performing deep network using mini-batch SGD with each batch size
-for batch_size in batch_sizes:
-    loader_train = DataLoader(train_set, batch_size=batch_size, shuffle=True)
-    loader_test = DataLoader(test_set, batch_size=batch_size, shuffle=False)
-    print(
-        f"Training loader created with batch size: {batch_size}, "
-        f"resulting in {len(loader_train)} mini-batches."
-    )
+# # Train the best-performing deep network using mini-batch SGD with each batch size
+# for batch_size in batch_sizes:
+#     loader_train = DataLoader(train_set, batch_size=batch_size, shuffle=True)
+#     loader_test = DataLoader(test_set, batch_size=batch_size, shuffle=False)
+#     print(
+#         f"Training loader created with batch size: {batch_size}, "
+#         f"resulting in {len(loader_train)} mini-batches."
+#     )
 
-    # TODO: Find best activation function model
-    # Define our model
-    model = BaselineDeepNetwork(activation_function=SiLU).to(device)
+#     # TODO: Find best activation function model
+#     # Define our model
+#     model = BaselineDeepNetwork(activation_function=SiLU).to(device)
 
-    # Train the model
-    model, training_curve = train_model(
-        model=model, train_loader=loader_train, test_loader=loader_test, device=device
-    )
+#     # Train the model
+#     model, training_curve = train_model(
+#         model=model, train_loader=loader_train, test_loader=loader_test, device=device
+#     )
 
-    # Save the trained model
-    save_model(
-        model=model,
-        training_curve=training_curve,
-        name=f"silu_deep_model_b={batch_size}",  # TODO: CHANGE ME! I should be named after the model with the best activation function
-        root_path=root_path,
-    )
+#     # Save the trained model
+#     save_model(
+#         model=model,
+#         training_curve=training_curve,
+#         name=f"silu_deep_model_b={batch_size}",  # TODO: CHANGE ME! I should be named after the model with the best activation function
+#         root_path=root_path,
+#     )
 
-    plot_loss_acc(training_curve)
+#     plot_loss_acc(training_curve)
 
-# %% ----- Optimizers: Mini-batch SGD with Momentum -----
+# # %% ----- Optimizers: Mini-batch SGD with Momentum -----
