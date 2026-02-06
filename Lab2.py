@@ -107,7 +107,10 @@ def cross_entropy_loss(logits: torch.tensor, y: torch.tensor) -> torch.tensor:
 
 # Define a simple two-layer network
 class TwoLayerNetwork(nn.Module):
-    def __init__(self, input_size: int = 3072, hidden_size: int = 3072, n_classes: int = 100):
+
+    def __init__(
+        self, input_size: int = 3072, hidden_size: int = 512, n_classes: int = 100
+    ):
         super(TwoLayerNetwork, self).__init__()
 
         self.input_size = input_size
@@ -418,25 +421,25 @@ class BaselineDeepNetwork(nn.Module):
         # -- Layer Definitions -- #
         # layer 1
         self.conv1 = nn.Conv2d(
-            in_channels=3, out_channels=96, kernel_size=5, stride=1, padding=2
+            in_channels=3, out_channels=24, kernel_size=5, stride=1, padding=2
         )
         self.pool1 = nn.MaxPool2d(kernel_size=3, stride=1)
 
         # layer 2
         self.conv2 = nn.Conv2d(
-            in_channels=96, out_channels=256, kernel_size=5, stride=2, padding=0
+            in_channels=24, out_channels=48, kernel_size=6, stride=2, padding=0
         )
         self.pool2 = nn.MaxPool2d(kernel_size=3, stride=1)
 
         # layer 3
         self.conv3 = nn.Conv2d(
-            in_channels=256, out_channels=384, kernel_size=3, stride=1, padding=0
+            in_channels=48, out_channels=96, kernel_size=3, stride=2, padding=0
         )
         self.pool3 = nn.MaxPool2d(kernel_size=3, stride=2)
 
         # layer 4
-        # After first three layers we're left with [N_examples, 384, 4, 4]
-        self.linear4 = nn.Linear(384 * 4 * 4, 1024)
+        # After first three layers we're left with [N_examples, 96, 2, 2]
+        self.linear4 = nn.Linear(96 * 2 * 2, 256)
 
         # layer 5
         self.linear5 = nn.Linear(1024, n_classes)
