@@ -393,23 +393,23 @@ class BaselineDeepNetwork(nn.Module):
     def forward(self, x: torch.tensor) -> torch.tensor:
         # Layer 1
         x = self.conv1(x)
-        x = ReLU(x)
+        x = sigmoid(x)
         x = self.pool1(x)
 
         # Layer 2
         x = self.conv2(x)
-        x = ReLU(x)
+        x = sigmoid(x)
         x = self.pool2(x)
 
         # Layer 3
         x = self.conv3(x)
-        x = ReLU(x)
+        x = sigmoid(x)
         x = self.pool3(x)
 
         # Layer 4
         x = x.view(x.size(0), -1)  # flatten
         x = self.linear4(x)
-        x = tanh(x)
+        x = sigmoid(x)
 
         # Layer 5
         x = self.linear5(x)
