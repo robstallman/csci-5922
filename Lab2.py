@@ -9,6 +9,7 @@ import torchvision
 import torchvision.transforms.v2 as v2
 from torchvision import datasets
 from torch.utils.data import DataLoader
+import typing
 
 # Run on Colab
 if os.getcwd() == "/content":
@@ -409,7 +410,7 @@ class BaselineDeepNetwork(nn.Module):
         self,
         input_size: int = 3072,
         n_classes: int = 100,
-        activation_function=sigmoid,
+        activation_function: typing.Callable = sigmoid,
     ):
         super(BaselineDeepNetwork, self).__init__()
 
@@ -442,7 +443,7 @@ class BaselineDeepNetwork(nn.Module):
         self.linear4 = nn.Linear(96 * 2 * 2, 256)
 
         # layer 5
-        self.linear5 = nn.Linear(1024, n_classes)
+        self.linear5 = nn.Linear(256, n_classes)
 
     def forward(self, x: torch.tensor) -> torch.tensor:
         # Layer 1
@@ -539,70 +540,70 @@ save_model(
 ## Part 2 ##
 ############
 
-# %% ----- Activation Functions: Definitions -----
+# # %% ----- Activation Functions: Definitions -----
 
 
-# Define ReLU activation function
-def ReLU(z: torch.tensor) -> torch.tensor:
-    return torch.clamp(z, min=0)
+# # Define ReLU activation function
+# def ReLU(z: torch.tensor) -> torch.tensor:
+#     return torch.clamp(z, min=0)
 
 
-# Define Leaky ReLU activation function
-def leaky_ReLU(z: torch.tensor) -> torch.tensor:
-    return torch.clamp(z, min=0.1 * z)
+# # Define Leaky ReLU activation function
+# def leaky_ReLU(z: torch.tensor) -> torch.tensor:
+#     return torch.clamp(z, min=0.1 * z)
 
 
-# Define tanh activation function
-def tanh(x: torch.tensor) -> torch.tensor:
-    pos_exp = torch.exp(x)
-    neg_exp = torch.exp(-x)
-    return (pos_exp - neg_exp) / (pos_exp + neg_exp)
+# # Define tanh activation function
+# def tanh(x: torch.tensor) -> torch.tensor:
+#     pos_exp = torch.exp(x)
+#     neg_exp = torch.exp(-x)
+#     return (pos_exp - neg_exp) / (pos_exp + neg_exp)
 
 
-# Define SiLU activation function
-def SiLU(z: torch.tensor) -> torch.tensor:
-    return z * sigmoid(z)
+# # Define SiLU activation function
+# def SiLU(z: torch.tensor) -> torch.tensor:
+#     return z * sigmoid(z)
 
 
-# %% ----- Activation Functions: Training (Pt 1) -----
+# # %% ----- Activation Functions: Training (Pt 1) -----
 
-# Define a modified deep network, replacing the sigmoid activation function with tanh
-model = BaselineDeepNetwork(activation_function=tanh).to(device)
+# # Define a modified deep network, replacing the sigmoid activation function with tanh
+# model = BaselineDeepNetwork(activation_function=tanh).to(device)
 
-# Train the model
-model, training_curve = train_model(
-    model=model, train_loader=train_loader, test_loader=test_loader, device=device
-)
+# # Train the model
+# model, training_curve = train_model(
+#     model=model, train_loader=train_loader, test_loader=test_loader, device=device
+# )
 
-# Save the trained model
-save_model(
-    model=model,
-    training_curve=training_curve,
-    name="tanh_deep_model",
-    root_path=root_path,
-)
+# # Save the trained model
+# save_model(
+#     model=model,
+#     training_curve=training_curve,
+#     name="tanh_deep_model",
+#     root_path=root_path,
+# )
 
-# plot_loss_acc(training_curve)
+# # plot_loss_acc(training_curve)
 
-# %% ----- Activation Functions: Training (Pt 2) -----
+# # %% ----- Activation Functions: Training (Pt 2) -----
 
-# Define a modified deep network, replacing the sigmoid activation function with SiLU
-model = BaselineDeepNetwork(activation_function=SiLU).to(device)
+# # Define a modified deep network, replacing the sigmoid activation function with SiLU
+# model = BaselineDeepNetwork(activation_function=SiLU).to(device)
 
-# Train the model
-model, training_curve = train_model(
-    model=model, train_loader=train_loader, test_loader=test_loader, device=device
-)
+# # Train the model
+# model, training_curve = train_model(
+#     model=model, train_loader=train_loader, test_loader=test_loader, device=device
+# )
 
-# Save the trained model
-save_model(
-    model=model,
-    training_curve=training_curve,
-    name="silu_deep_model",
-    root_path=root_path,
-)
+# # Save the trained model
+# save_model(
+#     model=model,
+#     training_curve=training_curve,
+#     name="silu_deep_model",
+#     root_path=root_path,
+# )
 
-# plot_loss_acc(training_curve)
+# # plot_loss_acc(training_curve)
 
 # %% ----- Optimizers: Mini-batch SGD -----
 # # CIFAR-100 has 50,000 training examples, so we can experiment with some large batch sizes
