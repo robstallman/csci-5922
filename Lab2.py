@@ -409,7 +409,7 @@ class BaselineDeepNetwork(nn.Module):
         self,
         input_size: int = 3072,
         n_classes: int = 100,
-        activation_function: function = sigmoid,
+        activation_function=sigmoid,
     ):
         super(BaselineDeepNetwork, self).__init__()
 
