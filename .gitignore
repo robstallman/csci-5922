@@ -224,4 +224,6 @@ __marimo__/
 ##########
 data/
 models/
-training_curves
+training_curves/
+wandb/
+slurm_job_logs/
