@@ -4,7 +4,7 @@ import wandb
 from dotenv import load_dotenv
 
 load_dotenv()
-wandb.login(key=os.getenv("WAND_API_KEY"))
+wandb.login(key=os.getenv("WANDB_API_KEY"))
 
 # Start a new wandb run to track this script.
 run = wandb.init(

@@ -8,13 +8,13 @@ Stage: build
 
 %post
     NOW=`date`
-    pip install pandas matplotlib
+    pip install pandas matplotlib python-dotenv wandb
 
 %labels
     Author rost5691@colorado.edu
     Version v0.0.1
 
 %help
-    This is a container in which pytorch (with cuda support), matplotlib, and pandas have been installed.
+    This is a container in which pytorch (with cuda support), matplotlib, pandas, python-dotenv, and wandb have been installed.
     See apptainer docs for more info:
     https://apptainer.org/docs/user/main/definition_files.html
