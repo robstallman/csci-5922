@@ -535,18 +535,18 @@ class BaselineDeepNetwork(nn.Module):
 
 
 # %% ----- Building a Baseline Deep Network: Training -----
-# # Create an instance of the model
-# model = BaselineDeepNetwork().to(device)
+# Create an instance of the model
+model = BaselineDeepNetwork().to(device)
 
-# # Train the model
-# train_model(
-#     model=model,
-#     train_loader=train_loader,
-#     test_loader=test_loader,
-#     device=device,
-#     wandb_tags=["baseline", "deep"],
-#     model_name="baseline_deep",
-# )
+# Train the model
+train_model(
+    model=model,
+    train_loader=train_loader,
+    test_loader=test_loader,
+    device=device,
+    wandb_tags=["baseline", "deep"],
+    model_name="baseline_deep",
+)
 
 # %% Part 2
 ########################################
@@ -580,35 +580,35 @@ def SiLU(z: torch.tensor) -> torch.tensor:
 
 # %% ----- Activation Functions: Training (Pt 1) -----
 
-# Define a modified deep network, replacing the sigmoid activation function with tanh
-model = BaselineDeepNetwork(activation_function=tanh).to(device)
+# # Define a modified deep network, replacing the sigmoid activation function with tanh
+# model = BaselineDeepNetwork(activation_function=tanh).to(device)
 
-# Train the model
-train_model(
-    model=model,
-    train_loader=train_loader,
-    test_loader=test_loader,
-    device=device,
-    wandb_tags=["tanh_activation", "deep"],
-    model_name="tanh_deep",
-)
+# # Train the model
+# train_model(
+#     model=model,
+#     train_loader=train_loader,
+#     test_loader=test_loader,
+#     device=device,
+#     wandb_tags=["tanh_activation", "deep"],
+#     model_name="tanh_deep",
+# )
 
 # %% ----- Activation Functions: Training (Pt 2) -----
 
-# Define a modified deep network, replacing the sigmoid activation function with SiLU
-model = BaselineDeepNetwork(activation_function=SiLU).to(device)
+# # Define a modified deep network, replacing the sigmoid activation function with SiLU
+# model = BaselineDeepNetwork(activation_function=SiLU).to(device)
 
-# Train the model
-train_model(
-    model=model,
-    train_loader=train_loader,
-    test_loader=test_loader,
-    device=device,
-    wandb_tags=["silu_activation", "deep"],
-    model_name="silu_deep",
-)
+# # Train the model
+# train_model(
+#     model=model,
+#     train_loader=train_loader,
+#     test_loader=test_loader,
+#     device=device,
+#     wandb_tags=["silu_activation", "deep"],
+#     model_name="silu_deep",
+# )
 
-# # %% ----- Optimizers: Mini-batch SGD -----
+# %% ----- Optimizers: Mini-batch SGD -----
 # # CIFAR-100 has 50,000 training examples, so we can experiment with some large batch sizes
 # batch_sizes = [64, 256, 1024]
 
