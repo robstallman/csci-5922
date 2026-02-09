@@ -1,5 +1,7 @@
-# %% Imports
+# %% Setup
+# 3rd party imports
 import copy
+import logging
 import matplotlib.pyplot as plt
 import os
 import pandas as pd
@@ -10,6 +12,12 @@ import torchvision.transforms.v2 as v2
 from torchvision import datasets
 from torch.utils.data import DataLoader
 import typing
+
+# Local imports
+from logs import make_logger
+
+# Set up logging
+logger = make_logger(log_prefix="Lab2_training")
 
 # Run on Colab
 if os.getcwd() == "/content":
@@ -23,10 +31,10 @@ else:
 # Run on GPU
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-# %%
-############
-## Part 1 ##
-############
+# %% Part 1
+#####################
+## Baseline Models ##
+#####################
 
 # %% ----- Selecting a Difficult Dataset -----
 
@@ -61,8 +69,8 @@ X = torch.concat((x_train, x_test), dim=1)
 # Find mean and standard deviation for each channel across all samples
 mu = X.mean(dim=(1,2))
 sigma = X.std(dim=(1,2))
-print(f"CIFAR-100 means: {mu}")
-print(f"CIFAR-100 standard deviations: {sigma}")
+logging.info(f"CIFAR-100 means: {mu}")
+logging.info(f"CIFAR-100 standard deviations: {sigma}")
 
 # Transforms for normalizing data – we'll leave the training data untouched otherwise
 tfms = v2.Compose([
@@ -81,7 +89,7 @@ train_loader = DataLoader(train_set, batch_size=batch_size, shuffle=True)
 test_loader  = DataLoader(test_set,  batch_size=batch_size, shuffle=False)
 
 classes = train_set.classes
-print(f"Training dataset contains {len(classes)} classes")
+logging.info(f"Training dataset contains {len(classes)} classes")
 
 # %% ----- Evaluating the Dataset Difficulty: Definitions -----
 
@@ -138,7 +146,7 @@ class TwoLayerNetwork(nn.Module):
         output = softmax(linear3)
         return output
 
-    def backward(self, loss: torch.tensor, lr: float = 0.1, alpha: float = 0.0):
+    def backward(self, loss: torch.tensor, lr: float = 0.001, alpha: float = 0.0):
         # Reset parameter gradients
         self.linear1.weight.grad = None
         self.linear1.bias.grad = None
@@ -179,7 +187,7 @@ def run_epoch(
     loader: DataLoader,
     device: torch.device,
     train: bool = True,
-    lr: float = 0.1,
+    lr: float = 0.001,
     alpha: float = 0.0,
 ) -> tuple[torch.tensor, torch.tensor]:
     # Make sure we're on the correct device
@@ -232,11 +240,11 @@ def train_model(
     train_loader: DataLoader,
     test_loader: DataLoader,
     device: torch.device,
-    lr: int = 0.1,
-    n_epochs: int = 1000,
-    print_every: int = 25,
+    lr: int = 0.001,
+    n_epochs: int = 5000,
+    print_every: int = 50,
     early_stopping: bool = True,
-    patience: int = 50,
+    patience: int = 500,
     min_delta: float = 1e-2,
     alpha: float = 0.0,
 ):
@@ -284,10 +292,12 @@ def train_model(
 
         # Print the losses periodically
         if epoch % print_every == (print_every - 1):
-            print(f'Epoch {epoch+1}/{n_epochs}\n'
-                  f'--------------------------\n'
-                  f'Train loss: {train_loss:.4f} | Test loss: {test_loss:.4f}\n'
-                  f'Train accuracy: {train_acc:.4f} | Test accuracy: {test_acc:.4f}\n')
+            logging.info(
+                f"Epoch {epoch+1}/{n_epochs}\n"
+                f"--------------------------\n"
+                f"Train loss: {train_loss:.4f} | Test loss: {test_loss:.4f}\n"
+                f"Train accuracy: {train_acc:.4f} | Test accuracy: {test_acc:.4f}\n"
+            )
 
         # Early stopping logic
         if early_stopping:
@@ -300,22 +310,24 @@ def train_model(
             else:
                 no_improvement_count += 1
                 if no_improvement_count >= patience:
-                    print(f"Early stopping triggered at epoch {epoch+1}\n"
-                          f"Best epoch was {best_epoch} with test loss {best_test_loss:.4f}")
+                    logging.info(
+                        f"Early stopping triggered at epoch {epoch+1}\n"
+                        f"Best epoch was {best_epoch} with test loss {best_test_loss:.4f}"
+                    )
                     break
 
-        # Reload best model
-        if early_stopping:
-            model.load_state_dict(best_model_weights)
+    # Reload best model
+    if early_stopping:
+        model.load_state_dict(best_model_weights)
 
-        # Gather epochs, losses, accuracies to return
-        training_curve = {
-            'epochs': epochs,
-            'train_losses': train_losses,
-            'test_losses': test_losses,
-            'train_accuracies': train_accuracies,
-            'test_accuracies': test_accuracies
-        }
+    # Gather epochs, losses, accuracies to return
+    training_curve = {
+        "epochs": epochs,
+        "train_losses": train_losses,
+        "test_losses": test_losses,
+        "train_accuracies": train_accuracies,
+        "test_accuracies": test_accuracies,
+    }
 
     return model, training_curve
 
@@ -368,13 +380,13 @@ def save_model(
     # Save the model to the directory
     filepath = os.path.join(root_path, "models", f"{name}.pt")
     torch.save(model.state_dict(), filepath)
-    print(f"Model saved to: {filepath}")
+    logging.info(f"Model saved to: {filepath}")
 
     # Save the training curve as a csv
     df = pd.DataFrame(training_curve)
     filepath = os.path.join(root_path, "training_curves", f"{name}.csv")
     df.to_csv(filepath)
-    print(f"Training curve saved to: {filepath}")
+    logging.info(f"Training curve saved to: {filepath}")
 
 
 # %% ----- Evaluating the Dataset Difficulty: Training -----
@@ -422,28 +434,28 @@ class BaselineDeepNetwork(nn.Module):
         # -- Layer Definitions -- #
         # layer 1
         self.conv1 = nn.Conv2d(
-            in_channels=3, out_channels=24, kernel_size=5, stride=1, padding=2
+            in_channels=3, out_channels=16, kernel_size=5, stride=1, padding=2
         )
         self.pool1 = nn.MaxPool2d(kernel_size=3, stride=1)
 
         # layer 2
         self.conv2 = nn.Conv2d(
-            in_channels=24, out_channels=48, kernel_size=6, stride=2, padding=0
+            in_channels=16, out_channels=32, kernel_size=6, stride=2, padding=0
         )
         self.pool2 = nn.MaxPool2d(kernel_size=3, stride=1)
 
         # layer 3
         self.conv3 = nn.Conv2d(
-            in_channels=48, out_channels=96, kernel_size=3, stride=2, padding=0
+            in_channels=32, out_channels=64, kernel_size=3, stride=2, padding=0
         )
         self.pool3 = nn.MaxPool2d(kernel_size=3, stride=2)
 
         # layer 4
-        # After first three layers we're left with [N_examples, 96, 2, 2]
-        self.linear4 = nn.Linear(96 * 2 * 2, 256)
+        # After first three layers we're left with [N_examples, 64, 2, 2]
+        self.linear4 = nn.Linear(64 * 2 * 2, 128)
 
         # layer 5
-        self.linear5 = nn.Linear(256, n_classes)
+        self.linear5 = nn.Linear(128, n_classes)
 
     def forward(self, x: torch.tensor) -> torch.tensor:
         # Layer 1
@@ -472,7 +484,9 @@ class BaselineDeepNetwork(nn.Module):
 
         return output
 
-    def backward(self, loss: torch.tensor, lr: float = 0.1, alpha: float = 0.0) -> None:
+    def backward(
+        self, loss: torch.tensor, lr: float = 0.001, alpha: float = 0.0
+    ) -> None:
         # Reset parameter gradients
         # NOTE: No learnable parameters for activation functions or pooling layers
         self.conv1.weight.grad = None
@@ -535,106 +549,291 @@ save_model(
 
 # plot_loss_acc(training_curve)
 
-# %%
-############
-## Part 2 ##
-############
+# %% Part 2
+########################################
+# Activation Functions and Optimizers ##
+########################################
 
-# # %% ----- Activation Functions: Definitions -----
-
-
-# # Define ReLU activation function
-# def ReLU(z: torch.tensor) -> torch.tensor:
-#     return torch.clamp(z, min=0)
+# %% ----- Activation Functions: Definitions -----
 
 
-# # Define Leaky ReLU activation function
-# def leaky_ReLU(z: torch.tensor) -> torch.tensor:
-#     return torch.clamp(z, min=0.1 * z)
+# Define ReLU activation function
+def ReLU(z: torch.tensor) -> torch.tensor:
+    return torch.clamp(z, min=0)
 
 
-# # Define tanh activation function
-# def tanh(x: torch.tensor) -> torch.tensor:
-#     pos_exp = torch.exp(x)
-#     neg_exp = torch.exp(-x)
-#     return (pos_exp - neg_exp) / (pos_exp + neg_exp)
+# Define Leaky ReLU activation function
+def leaky_ReLU(z: torch.tensor) -> torch.tensor:
+    return torch.clamp(z, min=0.1 * z)
 
 
-# # Define SiLU activation function
-# def SiLU(z: torch.tensor) -> torch.tensor:
-#     return z * sigmoid(z)
+# Define tanh activation function
+def tanh(x: torch.tensor) -> torch.tensor:
+    pos_exp = torch.exp(x)
+    neg_exp = torch.exp(-x)
+    return (pos_exp - neg_exp) / (pos_exp + neg_exp)
 
 
-# # %% ----- Activation Functions: Training (Pt 1) -----
+# Define SiLU activation function
+def SiLU(z: torch.tensor) -> torch.tensor:
+    return z * sigmoid(z)
 
-# # Define a modified deep network, replacing the sigmoid activation function with tanh
-# model = BaselineDeepNetwork(activation_function=tanh).to(device)
 
-# # Train the model
-# model, training_curve = train_model(
-#     model=model, train_loader=train_loader, test_loader=test_loader, device=device
-# )
+# %% ----- Activation Functions: Training (Pt 1) -----
 
-# # Save the trained model
-# save_model(
-#     model=model,
-#     training_curve=training_curve,
-#     name="tanh_deep_model",
-#     root_path=root_path,
-# )
+# Define a modified deep network, replacing the sigmoid activation function with tanh
+model = BaselineDeepNetwork(activation_function=tanh).to(device)
 
-# # plot_loss_acc(training_curve)
+# Train the model
+model, training_curve = train_model(
+    model=model, train_loader=train_loader, test_loader=test_loader, device=device
+)
 
-# # %% ----- Activation Functions: Training (Pt 2) -----
+# Save the trained model
+save_model(
+    model=model,
+    training_curve=training_curve,
+    name="tanh_deep_model",
+    root_path=root_path,
+)
 
-# # Define a modified deep network, replacing the sigmoid activation function with SiLU
-# model = BaselineDeepNetwork(activation_function=SiLU).to(device)
+# plot_loss_acc(training_curve)
 
-# # Train the model
-# model, training_curve = train_model(
-#     model=model, train_loader=train_loader, test_loader=test_loader, device=device
-# )
+# %% ----- Activation Functions: Training (Pt 2) -----
 
-# # Save the trained model
-# save_model(
-#     model=model,
-#     training_curve=training_curve,
-#     name="silu_deep_model",
-#     root_path=root_path,
-# )
+# Define a modified deep network, replacing the sigmoid activation function with SiLU
+model = BaselineDeepNetwork(activation_function=SiLU).to(device)
 
-# # plot_loss_acc(training_curve)
+# Train the model
+model, training_curve = train_model(
+    model=model, train_loader=train_loader, test_loader=test_loader, device=device
+)
+
+# Save the trained model
+save_model(
+    model=model,
+    training_curve=training_curve,
+    name="silu_deep_model",
+    root_path=root_path,
+)
+
+# plot_loss_acc(training_curve)
 
 # %% ----- Optimizers: Mini-batch SGD -----
-# # CIFAR-100 has 50,000 training examples, so we can experiment with some large batch sizes
-# batch_sizes = [64, 256, 1024]
+# CIFAR-100 has 50,000 training examples, so we can experiment with some large batch sizes
+batch_sizes = [64, 256, 1024]
 
-# # Train the best-performing deep network using mini-batch SGD with each batch size
-# for batch_size in batch_sizes:
-#     loader_train = DataLoader(train_set, batch_size=batch_size, shuffle=True)
-#     loader_test = DataLoader(test_set, batch_size=batch_size, shuffle=False)
-#     print(
-#         f"Training loader created with batch size: {batch_size}, "
-#         f"resulting in {len(loader_train)} mini-batches."
-#     )
+# Train the best-performing deep network using mini-batch SGD with each batch size
+for batch_size in batch_sizes:
+    loader_train = DataLoader(train_set, batch_size=batch_size, shuffle=True)
+    loader_test = DataLoader(test_set, batch_size=batch_size, shuffle=False)
+    logging.info(
+        f"Training loader created with batch size: {batch_size}, "
+        f"resulting in {len(loader_train)} mini-batches."
+    )
 
-#     # TODO: Find best activation function model
-#     # Define our model
-#     model = BaselineDeepNetwork(activation_function=SiLU).to(device)
+    # TODO: Find best activation function model
+    # Define our model
+    model = BaselineDeepNetwork(activation_function=SiLU).to(device)
 
-#     # Train the model
-#     model, training_curve = train_model(
-#         model=model, train_loader=loader_train, test_loader=loader_test, device=device
-#     )
+    # Train the model
+    model, training_curve = train_model(
+        model=model, train_loader=loader_train, test_loader=loader_test, device=device
+    )
 
-#     # Save the trained model
-#     save_model(
-#         model=model,
-#         training_curve=training_curve,
-#         name=f"silu_deep_model_b={batch_size}",  # TODO: CHANGE ME! I should be named after the model with the best activation function
-#         root_path=root_path,
-#     )
+    # Save the trained model
+    save_model(
+        model=model,
+        training_curve=training_curve,
+        name=f"silu_deep_model_b={batch_size}",  # TODO: CHANGE ME! I should be named after the model with the best activation function
+        root_path=root_path,
+    )
 
-#     plot_loss_acc(training_curve)
+    plot_loss_acc(training_curve)
 
-# # %% ----- Optimizers: Mini-batch SGD with Momentum -----
+# %% ----- Optimizers: Mini-batch SGD with Momentum -----
+# TODO: Pick best mini-batch size from previous step
+batch_size = 1024
+
+# Load data
+loader_train = DataLoader(train_set, batch_size=batch_size, shuffle=True)
+loader_test = DataLoader(test_set, batch_size=batch_size, shuffle=False)
+
+# TODO: Define the best activation function
+activation_function = SiLU
+
+# Define a set of rates to use for momentum
+momentum_rates = [0.9, 0.5, 1.5]
+
+# Train the best-performing deep network using each rate
+for momentum_rate in momentum_rates:
+    # Create an instance of the model
+    model = BaselineDeepNetwork(activation_function=activation_function)
+
+    # Train the model using momentum
+    model, training_curve = train_model(
+        model=model,
+        train_loader=loader_train,
+        test_loader=loader_test,
+        device=device,
+        alpha=momentum_rate,
+    )
+
+    # Save the trained model
+    save_model(
+        model=model,
+        training_curve=training_curve,
+        name=f"silu_deep_model_b={batch_size}_alpha={momentum_rate}",  # TODO: CHANGE ME! I should be named after the model with the best activation function
+    )
+
+# %% Part 3
+######################
+## Skip Connections ##
+######################
+
+# %% ----- Extending the Model: Definitions -----
+
+
+# Define a baseline network for deep learning
+class ExtendedDeepModel(nn.Module):
+
+    def __init__(
+        self,
+        input_size: int = 3072,
+        n_classes: int = 100,
+        activation_function: typing.Callable = sigmoid,
+    ):
+        super(ExtendedDeepModel, self).__init__()
+
+        self.input_size = input_size
+        self.n_classes = n_classes
+        self.activation_fn = activation_function
+        self.first_pass = True  # For SGD with momentum
+
+        # -- Layer Definitions -- #
+        # layer 1
+        self.conv1 = nn.Conv2d(
+            in_channels=3, out_channels=24, kernel_size=5, stride=1, padding=2
+        )
+        self.pool1 = nn.MaxPool2d(kernel_size=3, stride=1)
+
+        # layer 2
+        self.conv2 = nn.Conv2d(
+            in_channels=24, out_channels=48, kernel_size=6, stride=2, padding=0
+        )
+
+        # extended layers in layer 2
+        self.conv2_1 = nn.Conv2d(
+            in_channels=48, out_channels=48, kernel_size=6, stride=2, padding=9
+        )
+        self.conv2_2 = nn.Conv2d(
+            in_channels=48, out_channels=48, kernel_size=6, stride=2, padding=9
+        )
+        self.conv2_3 = nn.Conv2d(
+            in_channels=48, out_channels=48, kernel_size=6, stride=2, padding=9
+        )
+        self.conv2_4 = nn.Conv2d(
+            in_channels=48, out_channels=48, kernel_size=6, stride=2, padding=9
+        )
+        self.conv2_5 = nn.Conv2d(
+            in_channels=48, out_channels=48, kernel_size=6, stride=2, padding=9
+        )
+
+        # pooling for layer 2
+        self.pool2 = nn.MaxPool2d(kernel_size=3, stride=1)
+
+        # layer 3
+        self.conv3 = nn.Conv2d(
+            in_channels=48, out_channels=96, kernel_size=3, stride=2, padding=0
+        )
+        self.pool3 = nn.MaxPool2d(kernel_size=3, stride=2)
+
+        # layer 4
+        # After first three layers we're left with [N_examples, 96, 2, 2]
+        self.linear4 = nn.Linear(96 * 2 * 2, 256)
+
+        # layer 5
+        self.linear5 = nn.Linear(256, n_classes)
+
+    def forward(self, x: torch.tensor) -> torch.tensor:
+        # Layer 1
+        x = self.conv1(x)
+        x = self.activation_fn(x)
+        x = self.pool1(x)
+
+        # Layer 2
+        x = self.conv2(x)
+        x = self.activation_fn(x)
+        x = self.conv2_1(x)
+        x = self.activation_fn(x)
+        x = self.conv2_2(x)
+        x = self.activation_fn(x)
+        x = self.conv2_3(x)
+        x = self.activation_fn(x)
+        x = self.conv2_4(x)
+        x = self.activation_fn(x)
+        x = self.conv2_5(x)
+        x = self.activation_fn(x)
+        x = self.pool2(x)
+
+        # Layer 3
+        x = self.conv3(x)
+        x = self.activation_fn(x)
+        x = self.pool3(x)
+
+        # Layer 4
+        x = x.view(x.size(0), -1)  # flatten
+        x = self.linear4(x)
+        x = self.activation_fn(x)
+
+        # Layer 5
+        x = self.linear5(x)
+        output = softmax(x)
+
+        return output
+
+    def backward(
+        self, loss: torch.tensor, lr: float = 0.001, alpha: float = 0.0
+    ) -> None:
+        # Reset parameter gradients
+        # NOTE: No learnable parameters for activation functions or pooling layers
+        # TODO: Account for additional layers
+        self.conv1.weight.grad = None
+        self.conv1.bias.grad = None
+        self.conv2.weight.grad = None
+        self.conv2.bias.grad = None
+        self.conv3.weight.grad = None
+        self.conv3.bias.grad = None
+        self.linear4.weight.grad = None
+        self.linear4.bias.grad = None
+        self.linear5.weight.grad = None
+        self.linear5.bias.grad = None
+
+        # Update gradients
+        loss.backward()
+
+        # Update parameters
+        self.update_parameter(self.conv1.weight, lr=lr, alpha=alpha)
+        self.update_parameter(self.conv1.bias, lr=lr, alpha=alpha)
+        self.update_parameter(self.conv2.weight, lr=lr, alpha=alpha)
+        self.update_parameter(self.conv2.bias, lr=lr, alpha=alpha)
+        self.update_parameter(self.conv3.weight, lr=lr, alpha=alpha)
+        self.update_parameter(self.conv3.bias, lr=lr, alpha=alpha)
+        self.update_parameter(self.linear4.weight, lr=lr, alpha=alpha)
+        self.update_parameter(self.linear4.bias, lr=lr, alpha=alpha)
+        self.update_parameter(self.linear5.weight, lr=lr, alpha=alpha)
+        self.update_parameter(self.linear5.bias, lr=lr, alpha=alpha)
+
+    def update_parameter(self, parameter, lr, alpha):
+        # Start-up logic
+        if self.first_pass:
+            m = 0
+            self.first_pass = False
+        else:
+            m = parameter.data
+
+        # Modify the gradient with momentum
+        grad = m * alpha + parameter.grad
+
+        # Update the parameter
+        grad.data -= lr * grad
