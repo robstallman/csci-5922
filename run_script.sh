@@ -5,7 +5,7 @@
 #SBATCH --gres=gpu:1
 #SBATCH --job-name=csci5922_lab2_modeltraining
 #SBATCH --output=slurm_job_logs/csci5922_lab2_modeltraining.%j.out
-#SBATCH --time=24:00:00
+#SBATCH --time=12:00:00
 #SBATCH --qos=normal
 #SBATCH --nodes=1
 #SBATCH --ntasks=2

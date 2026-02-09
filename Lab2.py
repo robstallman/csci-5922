@@ -404,18 +404,18 @@ def plot_loss_acc(training_curve):
 
 
 # %% ----- Evaluating the Dataset Difficulty: Training -----
-# # Create an instance of the model
-# model = TwoLayerNetwork().to(device)
+# Create an instance of the model
+model = TwoLayerNetwork().to(device)
 
-# # Train the model
-# train_model(
-#     model=model,
-#     train_loader=train_loader,
-#     test_loader=test_loader,
-#     device=device,
-#     wandb_tags=["baseline", "shallow"],
-#     model_name="baseline_shallow",
-# )
+# Train the model
+train_model(
+    model=model,
+    train_loader=train_loader,
+    test_loader=test_loader,
+    device=device,
+    wandb_tags=["baseline", "shallow"],
+    model_name="baseline_shallow",
+)
 
 # %% ----- Building a Baseline Deep Network: Definitions -----
 
@@ -609,31 +609,31 @@ def SiLU(z: torch.tensor) -> torch.tensor:
 # )
 
 # %% ----- Optimizers: Mini-batch SGD -----
-# CIFAR-100 has 50,000 training examples, so we can experiment with some large batch sizes
-batch_sizes = [64, 256, 1024]
+# # CIFAR-100 has 50,000 training examples, so we can experiment with some large batch sizes
+# batch_sizes = [64, 256, 1024]
 
-# Train the best-performing deep network using mini-batch SGD with each batch size
-for batch_size in batch_sizes:
-    loader_train = DataLoader(train_set, batch_size=batch_size, shuffle=True)
-    loader_test = DataLoader(test_set, batch_size=batch_size, shuffle=False)
-    logging.info(
-        f"Training loader created with batch size: {batch_size}, "
-        f"resulting in {len(loader_train)} mini-batches."
-    )
+# # Train the best-performing deep network using mini-batch SGD with each batch size
+# for batch_size in batch_sizes:
+#     loader_train = DataLoader(train_set, batch_size=batch_size, shuffle=True)
+#     loader_test = DataLoader(test_set, batch_size=batch_size, shuffle=False)
+#     logging.info(
+#         f"Training loader created with batch size: {batch_size}, "
+#         f"resulting in {len(loader_train)} mini-batches."
+#     )
 
-    # TODO: Find best activation function model
-    # Define our model
-    model = BaselineDeepNetwork(activation_function=tanh).to(device)
+#     # TODO: Find best activation function model
+#     # Define our model
+#     model = BaselineDeepNetwork(activation_function=tanh).to(device)
 
-    # Train the model
-    train_model(
-        model=model,
-        train_loader=loader_train,
-        test_loader=loader_test,
-        device=device,
-        wandb_tags=["tanh", f"b={batch_size}", "deep"],
-        model_name=f"tanh_b={batch_size}_deep",
-    )
+#     # Train the model
+#     train_model(
+#         model=model,
+#         train_loader=loader_train,
+#         test_loader=loader_test,
+#         device=device,
+#         wandb_tags=["tanh", f"b={batch_size}", "deep"],
+#         model_name=f"tanh_b={batch_size}_deep",
+#     )
 
 # %% ----- Optimizers: Mini-batch SGD with Momentum -----
 # # TODO: Pick best mini-batch size from previous step
