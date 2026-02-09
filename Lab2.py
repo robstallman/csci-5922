@@ -623,7 +623,7 @@ for batch_size in batch_sizes:
 
     # TODO: Find best activation function model
     # Define our model
-    model = BaselineDeepNetwork(activation_function=SiLU).to(device)
+    model = BaselineDeepNetwork(activation_function=tanh).to(device)
 
     # Train the model
     train_model(
@@ -631,8 +631,8 @@ for batch_size in batch_sizes:
         train_loader=loader_train,
         test_loader=loader_test,
         device=device,
-        wandb_tags=["silu", f"b={batch_size}", "deep"],
-        model_name=f"silu_b={batch_size}_deep",
+        wandb_tags=["tanh", f"b={batch_size}", "deep"],
+        model_name=f"tanh_b={batch_size}_deep",
     )
 
 # %% ----- Optimizers: Mini-batch SGD with Momentum -----
