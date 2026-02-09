@@ -608,7 +608,7 @@ train_model(
     model_name="silu_deep",
 )
 
-# # %% ----- Optimizers: Mini-batch SGD -----
+# %% ----- Optimizers: Mini-batch SGD -----
 # # CIFAR-100 has 50,000 training examples, so we can experiment with some large batch sizes
 # batch_sizes = [64, 256, 1024]
 
