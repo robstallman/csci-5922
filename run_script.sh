@@ -5,7 +5,7 @@
 #SBATCH --gres=gpu:1
 #SBATCH --job-name=csci5922_lab2_modeltraining
 #SBATCH --output=slurm_job_logs/csci5922_lab2_modeltraining.%j.out
-#SBATCH --time=12:00:00
+#SBATCH --time=24:00:00
 #SBATCH --qos=normal
 #SBATCH --nodes=1
 #SBATCH --ntasks=2
@@ -15,4 +15,4 @@
 export IMAGES=/projects/rost5691/containers/
 export WORKDIR=/home/rost5691/projects/csci-5922
 cd $WORKDIR
-apptainer exec --nv -B $WORKDIR:/csci-5922,$WORKDIR/models:/csci-5922/models,$WORKDIR/training_curves:/csci-5922/training_curves,$WORKDIR/data:/csci-5922/data $IMAGES/pytorch-2.9.1-cuda12.8.sif python3 $WORKDIR/Lab2.py
+apptainer exec --nv -B $WORKDIR:/csci-5922,$WORKDIR/models:/csci-5922/models,$WORKDIR/training_curves:/csci-5922/training_curves,$WORKDIR/data:/csci-5922/data,$WORKDIR/logs:/csci-5922/logs,$WORKDIR/wandb:/csci-5922/wandb $IMAGES/pytorch-2.9.1-cuda12.8.sif python3 $WORKDIR/Lab2.py
