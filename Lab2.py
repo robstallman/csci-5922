@@ -544,10 +544,10 @@ train_model(
     train_loader=train_loader,
     test_loader=test_loader,
     device=device,
-    lr=0.0001,
+    lr=0.00001,
     wandb_tags=["baseline", "deep", "slower"],
     model_name="baseline_deep_v2",
-    wand_notes="Decrease learning rate from 1e-3 to 1e-4",
+    wand_notes="Decrease learning rate from 1e-4 to 1e-5",
 )
 
 # %% Part 2
