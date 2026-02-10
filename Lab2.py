@@ -404,20 +404,20 @@ def plot_loss_acc(training_curve):
 
 
 # %% ----- Evaluating the Dataset Difficulty: Training -----
-# Create an instance of the model
-model = TwoLayerNetwork().to(device)
+# # Create an instance of the model
+# model = TwoLayerNetwork().to(device)
 
-# Train the model
-train_model(
-    model=model,
-    train_loader=train_loader,
-    test_loader=test_loader,
-    device=device,
-    lr=0.0001,
-    wandb_tags=["baseline", "shallow", "slower"],
-    model_name="baseline_shallow_v2",
-    wand_notes="Decrease learning rate from 1e-3 to 1e-4",
-)
+# # Train the model
+# train_model(
+#     model=model,
+#     train_loader=train_loader,
+#     test_loader=test_loader,
+#     device=device,
+#     lr=0.0001,
+#     wandb_tags=["baseline", "shallow", "slower"],
+#     model_name="baseline_shallow_v2",
+#     wand_notes="Decrease learning rate from 1e-3 to 1e-4",
+# )
 
 # %% ----- Building a Baseline Deep Network: Definitions -----
 
@@ -535,18 +535,20 @@ class BaselineDeepNetwork(nn.Module):
 
 
 # %% ----- Building a Baseline Deep Network: Training -----
-# # Create an instance of the model
-# model = BaselineDeepNetwork().to(device)
+# Create an instance of the model
+model = BaselineDeepNetwork().to(device)
 
-# # Train the model
-# train_model(
-#     model=model,
-#     train_loader=train_loader,
-#     test_loader=test_loader,
-#     device=device,
-#     wandb_tags=["baseline", "deep"],
-#     model_name="baseline_deep",
-# )
+# Train the model
+train_model(
+    model=model,
+    train_loader=train_loader,
+    test_loader=test_loader,
+    device=device,
+    lr=0.0001,
+    wandb_tags=["baseline", "deep", "slower"],
+    model_name="baseline_deep_v2",
+    wand_notes="Decrease learning rate from 1e-3 to 1e-4",
+)
 
 # %% Part 2
 ########################################
