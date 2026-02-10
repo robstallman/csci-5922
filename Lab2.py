@@ -404,18 +404,18 @@ def plot_loss_acc(training_curve):
 
 
 # %% ----- Evaluating the Dataset Difficulty: Training -----
-# Create an instance of the model
-model = TwoLayerNetwork().to(device)
+# # Create an instance of the model
+# model = TwoLayerNetwork().to(device)
 
-# Train the model
-train_model(
-    model=model,
-    train_loader=train_loader,
-    test_loader=test_loader,
-    device=device,
-    wandb_tags=["baseline", "shallow"],
-    model_name="baseline_shallow",
-)
+# # Train the model
+# train_model(
+#     model=model,
+#     train_loader=train_loader,
+#     test_loader=test_loader,
+#     device=device,
+#     wandb_tags=["baseline", "shallow"],
+#     model_name="baseline_shallow",
+# )
 
 # %% ----- Building a Baseline Deep Network: Definitions -----
 
