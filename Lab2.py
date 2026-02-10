@@ -154,7 +154,7 @@ class TwoLayerNetwork(nn.Module):
         output = softmax(linear3)
         return output
 
-    def backward(self, loss: torch.tensor, lr: float = 0.001, alpha: float = 0.0):
+    def backward(self, loss: torch.tensor, lr: float, alpha: float = 0.0):
         # Reset parameter gradients
         self.linear1.weight.grad = None
         self.linear1.bias.grad = None
@@ -413,8 +413,10 @@ train_model(
     train_loader=train_loader,
     test_loader=test_loader,
     device=device,
-    wandb_tags=["baseline", "shallow"],
-    model_name="baseline_shallow",
+    lr=0.0001,
+    wandb_tags=["baseline", "shallow", "slower"],
+    model_name="baseline_shallow_v2",
+    wand_notes="Decrease learning rate from 1e-3 to 1e-4",
 )
 
 # %% ----- Building a Baseline Deep Network: Definitions -----
@@ -488,9 +490,7 @@ class BaselineDeepNetwork(nn.Module):
 
         return output
 
-    def backward(
-        self, loss: torch.tensor, lr: float = 0.001, alpha: float = 0.0
-    ) -> None:
+    def backward(self, loss: torch.tensor, lr: float, alpha: float = 0.0) -> None:
         # Reset parameter gradients
         # NOTE: No learnable parameters for activation functions or pooling layers
         self.conv1.weight.grad = None
