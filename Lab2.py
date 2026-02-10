@@ -214,7 +214,7 @@ def run_epoch(
     loader: DataLoader,
     device: torch.device,
     train: bool = True,
-    lr: float = 0.001,
+    lr: float = 1e-4,
     alpha: float = 0.0,
 ) -> tuple[float, float]:
     # Make sure we're on the correct device
@@ -267,7 +267,7 @@ def train_model(
     train_loader: DataLoader,
     test_loader: DataLoader,
     device: torch.device,
-    lr: int = 0.001,
+    lr: float = 1e-4,
     n_epochs: int = 5000,
     print_every: int = 50,
     early_stopping: bool = True,
