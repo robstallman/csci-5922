@@ -5,18 +5,17 @@ import logging
 import matplotlib.pyplot as plt
 import os
 import pandas as pd
+import sys
 import torch
 import torch.nn as nn
 import torchvision
 import torchvision.transforms.v2 as v2
 import typing
 import wandb
+from datetime import datetime
 from dotenv import load_dotenv
 from torchvision import datasets
 from torch.utils.data import DataLoader
-
-# Local imports
-from logs import make_logger
 
 # Set up W&B
 load_dotenv()
@@ -25,7 +24,13 @@ project_name = "CSCI5922_Lab2"
 entity = os.getenv("WANDB_ENTITY")
 
 # Set up logging
-logger = make_logger(log_prefix="Lab2_training")
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    handlers=[logging.StreamHandler(sys.stdout)],
+    force=True,
+)
+logger = logging.getLogger(__name__)
 
 # Run on Colab
 if os.getcwd() == "/content":
@@ -107,86 +112,26 @@ def sigmoid(z: torch.tensor) -> torch.tensor:
 
 # Define softmax activation function
 def softmax(z: torch.tensor) -> torch.tensor:
+    # Subtract maximum value from input for numerical stability
+    maxvals, _ = z.max(dim=1)
+    z -= maxvals.view(z.size(0), -1)
+
+    # Normal softmax
     y = torch.exp(z)
     y_tot = y.sum(dim=1).unsqueeze(1)
     return y / y_tot
 
+
 # Define cross-entropy loss
-def cross_entropy_loss(logits: torch.tensor, y: torch.tensor) -> torch.tensor:
+def cross_entropy_loss(predicted_probs: torch.tensor, y: torch.tensor) -> torch.tensor:
     # Get a tensor of predicted probabilities for each target class in the mini-batch
-    probs = logits[torch.arange(logits.size(0)), y]
-    
+    target_probs = predicted_probs[torch.arange(predicted_probs.size(0)), y]
+
     # Calculate the loss for each example
-    loss = -1 * torch.log(probs)
+    loss = -1 * torch.log(target_probs)
 
     # Return average loss over the examples
     return loss.mean()
-
-# Define a simple two-layer network
-class TwoLayerNetwork(nn.Module):
-
-    def __init__(
-        self, input_size: int = 3072, hidden_size: int = 512, n_classes: int = 100
-    ):
-        super(TwoLayerNetwork, self).__init__()
-
-        self.input_size = input_size
-        self.hidden_size = hidden_size
-        self.n_classes = n_classes
-        self.first_pass = True
-
-        # Define all layers in the model
-        # layer 1
-        self.linear1 = nn.Linear(self.input_size, hidden_size)
-        # layer 2
-        self.linear2 = nn.Linear(hidden_size, hidden_size)
-        # layer 3
-        self.linear3 = nn.Linear(hidden_size, n_classes)
-
-    def forward(self, x: torch.tensor):
-        # Build the feed forward structure
-        x = x.view(x.size(0), -1)     # flatten
-        linear1 = self.linear1(x)
-        act1 = sigmoid(linear1)
-        linear2 = self.linear2(act1)
-        act2 = sigmoid(linear2)
-        linear3 = self.linear3(act2)
-        output = softmax(linear3)
-        return output
-
-    def backward(self, loss: torch.tensor, lr: float = 0.001, alpha: float = 0.0):
-        # Reset parameter gradients
-        self.linear1.weight.grad = None
-        self.linear1.bias.grad = None
-        self.linear2.weight.grad = None
-        self.linear2.bias.grad = None
-        self.linear3.weight.grad = None
-        self.linear3.bias.grad = None
-
-        # Update gradients
-        loss.backward()
-
-        # Update parameters
-        self.update_parameter(self.linear1.weight, lr=lr, alpha=alpha)
-        self.update_parameter(self.linear1.bias, lr=lr, alpha=alpha)
-        self.update_parameter(self.linear2.weight, lr=lr, alpha=alpha)
-        self.update_parameter(self.linear2.bias, lr=lr, alpha=alpha)
-        self.update_parameter(self.linear3.weight, lr=lr, alpha=alpha)
-        self.update_parameter(self.linear3.bias, lr=lr, alpha=alpha)
-
-    def update_parameter(self, parameter, lr, alpha):
-        # Start-up logic
-        if self.first_pass:
-            m = 0
-            self.first_pass = False
-        else:
-            m = parameter.data
-
-        # Modify the gradient with momentum
-        grad = m * alpha + parameter.grad
-
-        # Update the parameter
-        grad.data -= lr * grad
 
 
 # Define a function to save models
@@ -208,15 +153,27 @@ def save_model(
     return filepath
 
 
+# Define a function for calculating the L1 norm of the gradients
+def calculate_l1_norm(named_params):
+    norms = []
+    for name, param in named_params:
+        grad_norm = torch.sum(torch.abs(param.grad)).item()
+        norms.append(grad_norm)
+    norms = torch.tensor(norms)
+    l1_norm = torch.sum(torch.abs(norms)).item()
+    return l1_norm
+
+
 # Define a function to evaluate a single epoch
 def run_epoch(
     model: nn.Module,
     loader: DataLoader,
     device: torch.device,
     train: bool = True,
-    lr: float = 1e-4,
+    lr: float = 1e-2,
     alpha: float = 0.0,
-) -> tuple[float, float]:
+    track_norms: bool = False,
+) -> tuple[float, float, list]:
     # Make sure we're on the correct device
     model = model.to(device)
 
@@ -227,38 +184,46 @@ def run_epoch(
         model.eval()
 
     # Initial values for tracking loss and accuracy over the epoch
-    loss, n_correct, n_total = 0,0,0
+    running_loss, n_correct, n_total = 0, 0, 0
+
+    # Empty list for tracking gradient size over the epoch
+    l1_norms = []
 
     # Set context based on model mode
     context = torch.enable_grad() if train else torch.no_grad()
     with context:
         # Iterate through the batches in the loader
-        for xb, yb in loader:
+        for idx, (xb, yb) in enumerate(loader):
             # Transfer to device
             xb, yb = xb.to(device), yb.to(device)
 
             # -- Forward pass -- #
             # Get probabilities for each class
-            logits = model(xb)
+            predicted_probs = model(xb)
 
             # Get average loss over all the examples in the mini-batch
-            loss = cross_entropy_loss(logits, yb)
+            loss = cross_entropy_loss(predicted_probs, yb)
 
             # -- Backward pass -- #
             if train:
                 model.backward(loss, lr, alpha)
+                if track_norms:
+                    l1_norms.append(calculate_l1_norm(model.named_parameters()))
 
             # Update running counts for loss and accuracy
-            loss += loss.item()
-            predictions = logits.argmax(dim=1)
+            running_loss += loss.item()
+            predictions = predicted_probs.argmax(dim=1)
             n_correct += (predictions == yb).sum()
             n_total += yb.shape[0]
 
     # Calculate accuracy for this epoch
     acc = n_correct / n_total
 
+    # Calculate average batch loss
+    running_loss = running_loss / len(loader)
+
     # Return loss and accuracy for this epoch
-    return loss.item(), acc.item()
+    return running_loss, acc.item(), l1_norms
 
 
 # Define function for training
@@ -267,17 +232,18 @@ def train_model(
     train_loader: DataLoader,
     test_loader: DataLoader,
     device: torch.device,
-    lr: float = 1e-4,
-    n_epochs: int = 5000,
-    print_every: int = 50,
+    lr: float = 1e-2,
+    n_epochs: int = 1500,
+    print_every: int = 10,
     early_stopping: bool = True,
-    patience: int = 500,
+    patience: int = 100,
     min_delta: float = 1e-2,
     alpha: float = 0.0,
     wandb_config: dict = {},
     wandb_tags: list[str] = [],
-    wand_notes: str = "",
+    wandb_notes: str = "",
     model_name: str = "baseline",
+    track_norms: bool = False,
 ) -> None:
     # Early stopping setup
     best_test_loss = float('inf')
@@ -298,23 +264,38 @@ def train_model(
     with wandb.init(
         entity=entity,
         project=project_name,
-        notes=wand_notes,
+        notes=wandb_notes,
         tags=wandb_tags,
         config=wandb_config,
     ) as run:
         for epoch in range(n_epochs):
             # Training over epoch
-            train_loss, train_acc = run_epoch(
-                model=model,
-                loader=train_loader,
-                device=device,
-                train=True,
-                lr=lr,
-                alpha=alpha,
-            )
+            if track_norms and epoch == 0:
+                train_loss, train_acc, grad_norms = run_epoch(
+                    model=model,
+                    loader=train_loader,
+                    device=device,
+                    train=True,
+                    lr=lr,
+                    alpha=alpha,
+                    track_norms=True,
+                )
+                norms_for_wandb = [
+                    [i, grad_norm] for i, grad_norm in enumerate(grad_norms)
+                ]
+            else:
+                train_loss, train_acc, _ = run_epoch(
+                    model=model,
+                    loader=train_loader,
+                    device=device,
+                    train=True,
+                    lr=lr,
+                    alpha=alpha,
+                )
+                norms_for_wandb = [[i, torch.nan] for i in range(len(train_loader))]
 
             # Testing over epoch
-            test_loss, test_acc = run_epoch(
+            test_loss, test_acc, _ = run_epoch(
                 model=model,
                 loader=test_loader,
                 device=device,
@@ -324,12 +305,16 @@ def train_model(
             )
 
             # Save losses and accuracies for this epoch
+            table = wandb.Table(
+                columns=["Batch", "Gradient L1-norm"], data=norms_for_wandb
+            )
             run.log(
                 {
                     "training_loss": train_loss,
                     "testing_loss": test_loss,
                     "training_accuracy": train_acc,
                     "testing_accuracy": test_acc,
+                    "grad_norms": table,
                 }
             )
 
@@ -370,54 +355,59 @@ def train_model(
     return
 
 
-# Define a function for visualizing training curves
-def plot_loss_acc(training_curve):
-    epochs = training_curve['epochs']
-    train_losses = training_curve['train_losses']
-    test_losses = training_curve['test_losses']
-    train_accuracies = training_curve['train_accuracies']
-    test_accuracies = training_curve['test_accuracies']
+# Define a simple two-layer network
+class TwoLayerNetwork(nn.Module):
 
-    # Create a figure and subplots
-    fig, ax = plt.subplots(1, 2, figsize=(10, 4))  # 1 row, 2 columns
+    def __init__(
+        self, input_size: int = 3072, hidden_size: int = 512, n_classes: int = 100
+    ):
+        super(TwoLayerNetwork, self).__init__()
 
-    # Plot loss on the first subplot
-    ax[0].plot(epochs, train_losses, label='Train set loss')
-    ax[0].plot(epochs, test_losses, label='Test set loss')
-    ax[0].set_title('Training Loss Over Epochs')
-    ax[0].set_xlabel('Epochs')
-    ax[0].set_ylabel('Loss')
-    ax[0].grid(True)
-    ax[0].legend()
+        self.input_size = input_size
+        self.hidden_size = hidden_size
+        self.n_classes = n_classes
+        self.first_pass = True
 
-    # Plot accuracy on the second subplot
-    ax[1].plot(epochs, train_accuracies, label='Train set accuracy')
-    ax[1].plot(epochs, test_accuracies, label='Test set accuracy')
-    ax[1].set_title('Training Accuracy Over Epochs')
-    ax[1].set_xlabel('Epochs')
-    ax[1].set_ylabel('Accuracy')
-    ax[1].grid(True)
-    ax[1].legend()
+        # Define all layers in the model
+        # layer 1
+        self.linear1 = nn.Linear(self.input_size, hidden_size)
+        # layer 2
+        self.linear2 = nn.Linear(hidden_size, hidden_size)
+        # layer 3
+        self.linear3 = nn.Linear(hidden_size, n_classes)
 
-    plt.tight_layout()
-    plt.show()
+    def forward(self, x: torch.tensor):
+        # Build the feed forward structure
+        x = x.flatten(1)
+        linear1 = self.linear1(x)
+        act1 = sigmoid(linear1)
+        linear2 = self.linear2(act1)
+        act2 = sigmoid(linear2)
+        linear3 = self.linear3(act2)
+        output = softmax(linear3)
+        return output
 
+    def backward(self, loss: torch.tensor, lr: float, alpha: float = 0.0):
+        # Reset parameter gradients
+        self.linear1.weight.grad = None
+        self.linear1.bias.grad = None
+        self.linear2.weight.grad = None
+        self.linear2.bias.grad = None
+        self.linear3.weight.grad = None
+        self.linear3.bias.grad = None
 
-# %% ----- Evaluating the Dataset Difficulty: Training -----
-# # Create an instance of the model
-# model = TwoLayerNetwork().to(device)
+        # Update gradients
+        loss.backward()
 
-# # Train the model
-# train_model(
-#     model=model,
-#     train_loader=train_loader,
-#     test_loader=test_loader,
-#     device=device,
-#     wandb_tags=["baseline", "shallow"],
-#     model_name="baseline_shallow",
-# )
+        # Update parameters
+        with torch.no_grad():
+            self.linear1.weight -= lr * self.linear1.weight.grad
+            self.linear1.bias -= lr * self.linear1.bias.grad
+            self.linear2.weight -= lr * self.linear2.weight.grad
+            self.linear2.bias -= lr * self.linear2.bias.grad
+            self.linear3.weight -= lr * self.linear3.weight.grad
+            self.linear3.bias -= lr * self.linear3.bias.grad
 
-# %% ----- Building a Baseline Deep Network: Definitions -----
 
 # Define a baseline network for deep learning
 class BaselineDeepNetwork(nn.Module):
@@ -433,7 +423,6 @@ class BaselineDeepNetwork(nn.Module):
         self.input_size = input_size
         self.n_classes = n_classes
         self.activation_fn = activation_function
-        self.first_pass = True  # For SGD with momentum
 
         # -- Layer Definitions -- #
         # layer 1
@@ -461,6 +450,19 @@ class BaselineDeepNetwork(nn.Module):
         # layer 5
         self.linear5 = nn.Linear(128, n_classes)
 
+        # TODO: Fill these in
+        # Storage tensors for momentum
+        self.conv1_weight_momentum = torch.zeros_like(self.conv1.weight)
+        self.conv1_bias_momentum = torch.zeros_like(self.conv1.bias)
+        self.conv2_weight_momentum = torch.zeros_like(self.conv2.weight)
+        self.conv2_bias_momentum = torch.zeros_like(self.conv2.bias)
+        self.conv3_weight_momentum = torch.zeros_like(self.conv3.weight)
+        self.conv3_bias_momentum = torch.zeros_like(self.conv3.bias)
+        self.linear4_weight_momentum = torch.zeros_like(self.linear4.weight)
+        self.linear4_bias_momentum = torch.zeros_like(self.linear4.bias)
+        self.linear5_weight_momentum = torch.zeros_like(self.linear5.weight)
+        self.linear5_bias_momentum = torch.zeros_like(self.linear5.bias)
+
     def forward(self, x: torch.tensor) -> torch.tensor:
         # Layer 1
         x = self.conv1(x)
@@ -477,19 +479,23 @@ class BaselineDeepNetwork(nn.Module):
         x = self.activation_fn(x)
         x = self.pool3(x)
 
+        # Flatten between convolutional and fully connected layers
+        x = x.flatten(1)
+
         # Layer 4
-        x = x.view(x.size(0), -1)  # flatten
         x = self.linear4(x)
         x = self.activation_fn(x)
 
         # Layer 5
         x = self.linear5(x)
+
+        # Calculate probabilities from logits
         output = softmax(x)
 
         return output
 
     def backward(
-        self, loss: torch.tensor, lr: float = 0.001, alpha: float = 0.0
+        self, loss: torch.tensor, lr: float = 0.01, alpha: float = 0.0
     ) -> None:
         # Reset parameter gradients
         # NOTE: No learnable parameters for activation functions or pooling layers
@@ -508,45 +514,1225 @@ class BaselineDeepNetwork(nn.Module):
         loss.backward()
 
         # Update parameters
-        self.update_parameter(self.conv1.weight, lr=lr, alpha=alpha)
-        self.update_parameter(self.conv1.bias, lr=lr, alpha=alpha)
-        self.update_parameter(self.conv2.weight, lr=lr, alpha=alpha)
-        self.update_parameter(self.conv2.bias, lr=lr, alpha=alpha)
-        self.update_parameter(self.conv3.weight, lr=lr, alpha=alpha)
-        self.update_parameter(self.conv3.bias, lr=lr, alpha=alpha)
-        self.update_parameter(self.linear4.weight, lr=lr, alpha=alpha)
-        self.update_parameter(self.linear4.bias, lr=lr, alpha=alpha)
-        self.update_parameter(self.linear5.weight, lr=lr, alpha=alpha)
-        self.update_parameter(self.linear5.bias, lr=lr, alpha=alpha)
+        with torch.no_grad():
+            # TODO: Update momentum
+            self.conv1_weight_momentum = (
+                alpha * self.conv1_weight_momentum + self.conv1.weight.grad
+            )
+            self.conv1_bias_momentum = (
+                alpha * self.conv1_bias_momentum + self.conv1.bias.grad
+            )
+            self.conv2_weight_momentum = (
+                alpha * self.conv2_weight_momentum + self.conv2.weight.grad
+            )
+            self.conv2_bias_momentum = (
+                alpha * self.conv2_bias_momentum + self.conv2.bias.grad
+            )
+            self.conv3_weight_momentum = (
+                alpha * self.conv3_weight_momentum + self.conv3.weight.grad
+            )
+            self.conv3_bias_momentum = (
+                alpha * self.conv3_bias_momentum + self.conv3.bias.grad
+            )
+            self.linear4_weight_momentum = (
+                alpha * self.linear4_weight_momentum + self.linear4.weight.grad
+            )
+            self.linear4_bias_momentum = (
+                alpha * self.linear4_bias_momentum + self.linear4.bias.grad
+            )
+            self.linear5_weight_momentum = (
+                alpha * self.linear5_weight_momentum + self.linear5.weight.grad
+            )
+            self.linear5_bias_momentum = (
+                alpha * self.linear5_bias_momentum + self.linear5.bias.grad
+            )
 
-    def update_parameter(self, parameter, lr, alpha):
-        # Start-up logic
-        if self.first_pass:
-            m = 0
-            self.first_pass = False
-        else:
-            m = parameter.data
+            self.conv1.weight -= lr * self.conv1_weight_momentum
+            self.conv1.bias -= lr * self.conv1_bias_momentum
+            self.conv2.weight -= lr * self.conv2_weight_momentum
+            self.conv2.bias -= lr * self.conv2_bias_momentum
+            self.conv3.weight -= lr * self.conv3_weight_momentum
+            self.conv3.bias -= lr * self.conv3_bias_momentum
+            self.linear4.weight -= lr * self.linear4_weight_momentum
+            self.linear4.bias -= lr * self.linear4_bias_momentum
+            self.linear5.weight -= lr * self.linear5_weight_momentum
+            self.linear5.bias -= lr * self.linear5_bias_momentum
 
-        # Modify the gradient with momentum
-        grad = m * alpha + parameter.grad
 
-        # Update the parameter
-        grad.data -= lr * grad
+# Define an extended model for deep learning with skip connections
+class ExtendedDeepModel(nn.Module):
+    def __init__(
+        self,
+        input_size: int = 3072,
+        n_classes: int = 100,
+        activation_function: typing.Callable = sigmoid,
+    ):
+        super(ExtendedDeepModel, self).__init__()
 
+        self.input_size = input_size
+        self.n_classes = n_classes
+        self.activation_fn = activation_function
+
+        # -- Layer Definitions -- #
+        # layer 1
+        self.conv1 = nn.Conv2d(
+            in_channels=3, out_channels=16, kernel_size=5, stride=1, padding=2
+        )
+        self.pool1 = nn.MaxPool2d(kernel_size=3, stride=1)
+
+        # layer 2
+        self.conv2 = nn.Conv2d(
+            in_channels=16, out_channels=32, kernel_size=6, stride=2, padding=0
+        )
+        self.conv2_1 = nn.Conv2d(
+            in_channels=32, out_channels=32, kernel_size=5, stride=1, padding=2
+        )
+        self.conv2_2 = nn.Conv2d(
+            in_channels=32, out_channels=32, kernel_size=5, stride=1, padding=2
+        )
+        self.conv2_3 = nn.Conv2d(
+            in_channels=32, out_channels=32, kernel_size=5, stride=1, padding=2
+        )
+        self.conv2_4 = nn.Conv2d(
+            in_channels=32, out_channels=32, kernel_size=5, stride=1, padding=2
+        )
+        self.conv2_5 = nn.Conv2d(
+            in_channels=32, out_channels=32, kernel_size=5, stride=1, padding=2
+        )
+        self.pool2 = nn.MaxPool2d(kernel_size=3, stride=1)
+
+        # layer 3
+        self.conv3 = nn.Conv2d(
+            in_channels=32, out_channels=64, kernel_size=3, stride=2, padding=0
+        )
+        self.pool3 = nn.MaxPool2d(kernel_size=3, stride=2)
+
+        # layer 4
+        # After first three layers we're left with [N_examples, 64, 2, 2]
+        self.linear4 = nn.Linear(64 * 2 * 2, 128)
+        self.linear4_1 = nn.Linear(128, 128)
+        self.linear4_2 = nn.Linear(128, 128)
+        self.linear4_3 = nn.Linear(128, 128)
+        self.linear4_4 = nn.Linear(128, 128)
+        self.linear4_5 = nn.Linear(128, 128)
+
+        # layer 5
+        self.linear5 = nn.Linear(128, n_classes)
+
+        # Storage tensors for momentum
+        self.conv1_weight_momentum = torch.zeros_like(self.conv1.weight).to(
+            device=device
+        )
+        self.conv1_bias_momentum = torch.zeros_like(self.conv1.bias).to(device=device)
+        self.conv2_weight_momentum = torch.zeros_like(self.conv2.weight).to(
+            device=device
+        )
+        self.conv2_bias_momentum = torch.zeros_like(self.conv2.bias).to(device=device)
+
+        self.conv2_1_weight_momentum = torch.zeros_like(self.conv2_1.weight).to(
+            device=device
+        )
+        self.conv2_1_bias_momentum = torch.zeros_like(self.conv2_1.bias).to(
+            device=device
+        )
+        self.conv2_2_weight_momentum = torch.zeros_like(self.conv2_2.weight).to(
+            device=device
+        )
+        self.conv2_2_bias_momentum = torch.zeros_like(self.conv2_2.bias).to(
+            device=device
+        )
+        self.conv2_3_weight_momentum = torch.zeros_like(self.conv2_3.weight).to(
+            device=device
+        )
+        self.conv2_3_bias_momentum = torch.zeros_like(self.conv2_3.bias).to(
+            device=device
+        )
+        self.conv2_4_weight_momentum = torch.zeros_like(self.conv2_4.weight).to(
+            device=device
+        )
+        self.conv2_4_bias_momentum = torch.zeros_like(self.conv2_4.bias).to(
+            device=device
+        )
+        self.conv2_5_weight_momentum = torch.zeros_like(self.conv2_5.weight).to(
+            device=device
+        )
+        self.conv2_5_bias_momentum = torch.zeros_like(self.conv2_5.bias).to(
+            device=device
+        )
+        self.conv3_weight_momentum = torch.zeros_like(self.conv3.weight).to(
+            device=device
+        )
+        self.conv3_bias_momentum = torch.zeros_like(self.conv3.bias).to(device=device)
+        self.linear4_weight_momentum = torch.zeros_like(self.linear4.weight).to(
+            device=device
+        )
+        self.linear4_bias_momentum = torch.zeros_like(self.linear4.bias).to(
+            device=device
+        )
+        self.linear4_1_weight_momentum = torch.zeros_like(self.linear4_1.weight).to(
+            device=device
+        )
+        self.linear4_1_bias_momentum = torch.zeros_like(self.linear4_1.bias).to(
+            device=device
+        )
+        self.linear4_2_weight_momentum = torch.zeros_like(self.linear4_2.weight).to(
+            device=device
+        )
+        self.linear4_2_bias_momentum = torch.zeros_like(self.linear4_2.bias).to(
+            device=device
+        )
+        self.linear4_3_weight_momentum = torch.zeros_like(self.linear4_3.weight).to(
+            device=device
+        )
+        self.linear4_3_bias_momentum = torch.zeros_like(self.linear4_3.bias).to(
+            device=device
+        )
+        self.linear4_4_weight_momentum = torch.zeros_like(self.linear4_4.weight).to(
+            device=device
+        )
+        self.linear4_4_bias_momentum = torch.zeros_like(self.linear4_4.bias).to(
+            device=device
+        )
+        self.linear4_5_weight_momentum = torch.zeros_like(self.linear4_5.weight).to(
+            device=device
+        )
+        self.linear4_5_bias_momentum = torch.zeros_like(self.linear4_5.bias).to(
+            device=device
+        )
+        self.linear5_weight_momentum = torch.zeros_like(self.linear5.weight).to(
+            device=device
+        )
+        self.linear5_bias_momentum = torch.zeros_like(self.linear5.bias).to(
+            device=device
+        )
+
+    def forward(self, x: torch.tensor) -> torch.tensor:
+        # Layer 1
+        x = self.conv1(x)
+        x = self.activation_fn(x)
+        x = self.pool1(x)
+
+        # Layer 2
+        x = self.conv2(x)
+        x = self.activation_fn(x)
+
+        # Layer 3
+        x = self.conv2_1(x)
+        x = self.activation_fn(x)
+
+        # Layer 4
+        x = self.conv2_2(x)
+        x = self.activation_fn(x)
+
+        # Layer 5
+        x = self.conv2_3(x)
+        x = self.activation_fn(x)
+
+        # Layer 6
+        x = self.conv2_4(x)
+        x = self.activation_fn(x)
+
+        # Layer 7
+        x = self.conv2_5(x)
+        x = self.activation_fn(x)
+        x = self.pool2(x)
+
+        # Layer 8
+        x = self.conv3(x)
+        x = self.activation_fn(x)
+        x = self.pool3(x)
+
+        # Flatten between convolutional and fully connected layers
+        x = x.flatten(1)
+
+        # Layer 9
+        x = self.linear4(x)
+        x = self.activation_fn(x)
+
+        # Layer 10
+        x = self.linear4_1(x)
+        x = self.activation_fn(x)
+
+        # Layer 11
+        x = self.linear4_2(x)
+        x = self.activation_fn(x)
+
+        # Layer 12
+        x = self.linear4_3(x)
+        x = self.activation_fn(x)
+
+        # Layer 13
+        x = self.linear4_4(x)
+        x = self.activation_fn(x)
+
+        # Layer 14
+        x = self.linear4_5(x)
+        x = self.activation_fn(x)
+
+        # Layer 15
+        x = self.linear5(x)
+
+        # Calculate probabilities from logits
+        output = softmax(x)
+
+        return output
+
+    def backward(
+        self, loss: torch.tensor, lr: float = 0.01, alpha: float = 0.0
+    ) -> None:
+        # Reset parameter gradients
+        # NOTE: No learnable parameters for activation functions or pooling layers
+        self.conv1.weight.grad = None
+        self.conv1.bias.grad = None
+        self.conv2.weight.grad = None
+        self.conv2.bias.grad = None
+        self.conv2_1.weight.grad = None
+        self.conv2_1.bias.grad = None
+        self.conv2_2.weight.grad = None
+        self.conv2_2.bias.grad = None
+        self.conv2_3.weight.grad = None
+        self.conv2_3.bias.grad = None
+        self.conv2_4.weight.grad = None
+        self.conv2_4.bias.grad = None
+        self.conv2_5.weight.grad = None
+        self.conv2_5.bias.grad = None
+        self.conv3.weight.grad = None
+        self.conv3.bias.grad = None
+        self.linear4.weight.grad = None
+        self.linear4.bias.grad = None
+        self.linear4_1.weight.grad = None
+        self.linear4_1.bias.grad = None
+        self.linear4_2.weight.grad = None
+        self.linear4_2.bias.grad = None
+        self.linear4_3.weight.grad = None
+        self.linear4_3.bias.grad = None
+        self.linear4_4.weight.grad = None
+        self.linear4_4.bias.grad = None
+        self.linear4_5.weight.grad = None
+        self.linear4_5.bias.grad = None
+        self.linear5.weight.grad = None
+        self.linear5.bias.grad = None
+
+        # Update gradients
+        loss.backward()
+
+        # Update parameters
+        with torch.no_grad():
+            # Update momentum
+            self.conv1_weight_momentum = (
+                alpha * self.conv1_weight_momentum + self.conv1.weight.grad
+            )
+            self.conv1_bias_momentum = (
+                alpha * self.conv1_bias_momentum + self.conv1.bias.grad
+            )
+            self.conv2_weight_momentum = (
+                alpha * self.conv2_weight_momentum + self.conv2.weight.grad
+            )
+            self.conv2_bias_momentum = (
+                alpha * self.conv2_bias_momentum + self.conv2.bias.grad
+            )
+            self.conv2_1_weight_momentum = (
+                alpha * self.conv2_1_weight_momentum + self.conv2_1.weight.grad
+            )
+            self.conv2_1_bias_momentum = (
+                alpha * self.conv2_1_bias_momentum + self.conv2_1.bias.grad
+            )
+            self.conv2_2_weight_momentum = (
+                alpha * self.conv2_2_weight_momentum + self.conv2_2.weight.grad
+            )
+            self.conv2_2_bias_momentum = (
+                alpha * self.conv2_2_bias_momentum + self.conv2_2.bias.grad
+            )
+            self.conv2_3_weight_momentum = (
+                alpha * self.conv2_3_weight_momentum + self.conv2_3.weight.grad
+            )
+            self.conv2_3_bias_momentum = (
+                alpha * self.conv2_3_bias_momentum + self.conv2_3.bias.grad
+            )
+            self.conv2_4_weight_momentum = (
+                alpha * self.conv2_4_weight_momentum + self.conv2_4.weight.grad
+            )
+            self.conv2_4_bias_momentum = (
+                alpha * self.conv2_4_bias_momentum + self.conv2_4.bias.grad
+            )
+            self.conv2_5_weight_momentum = (
+                alpha * self.conv2_5_weight_momentum + self.conv2_5.weight.grad
+            )
+            self.conv2_5_bias_momentum = (
+                alpha * self.conv2_5_bias_momentum + self.conv2_5.bias.grad
+            )
+            self.conv3_weight_momentum = (
+                alpha * self.conv3_weight_momentum + self.conv3.weight.grad
+            )
+            self.conv3_bias_momentum = (
+                alpha * self.conv3_bias_momentum + self.conv3.bias.grad
+            )
+            self.linear4_weight_momentum = (
+                alpha * self.linear4_weight_momentum + self.linear4.weight.grad
+            )
+            self.linear4_bias_momentum = (
+                alpha * self.linear4_bias_momentum + self.linear4.bias.grad
+            )
+            self.linear4_1_weight_momentum = (
+                alpha * self.linear4_1_weight_momentum + self.linear4_1.weight.grad
+            )
+            self.linear4_1_bias_momentum = (
+                alpha * self.linear4_1_bias_momentum + self.linear4_1.bias.grad
+            )
+            self.linear4_2_weight_momentum = (
+                alpha * self.linear4_2_weight_momentum + self.linear4_2.weight.grad
+            )
+            self.linear4_2_bias_momentum = (
+                alpha * self.linear4_2_bias_momentum + self.linear4_2.bias.grad
+            )
+            self.linear4_3_weight_momentum = (
+                alpha * self.linear4_3_weight_momentum + self.linear4_3.weight.grad
+            )
+            self.linear4_3_bias_momentum = (
+                alpha * self.linear4_3_bias_momentum + self.linear4_3.bias.grad
+            )
+            self.linear4_4_weight_momentum = (
+                alpha * self.linear4_4_weight_momentum + self.linear4_4.weight.grad
+            )
+            self.linear4_4_bias_momentum = (
+                alpha * self.linear4_4_bias_momentum + self.linear4_4.bias.grad
+            )
+            self.linear4_5_weight_momentum = (
+                alpha * self.linear4_5_weight_momentum + self.linear4_5.weight.grad
+            )
+            self.linear4_5_bias_momentum = (
+                alpha * self.linear4_5_bias_momentum + self.linear4_5.bias.grad
+            )
+            self.linear5_weight_momentum = (
+                alpha * self.linear5_weight_momentum + self.linear5.weight.grad
+            )
+            self.linear5_bias_momentum = (
+                alpha * self.linear5_bias_momentum + self.linear5.bias.grad
+            )
+
+            self.conv1.weight -= lr * self.conv1_weight_momentum
+            self.conv1.bias -= lr * self.conv1_bias_momentum
+            self.conv2.weight -= lr * self.conv2_weight_momentum
+            self.conv2.bias -= lr * self.conv2_bias_momentum
+            self.conv2_1.weight -= lr * self.conv2_1_weight_momentum
+            self.conv2_1.bias -= lr * self.conv2_1_bias_momentum
+            self.conv2_2.weight -= lr * self.conv2_2_weight_momentum
+            self.conv2_2.bias -= lr * self.conv2_2_bias_momentum
+            self.conv2_3.weight -= lr * self.conv2_3_weight_momentum
+            self.conv2_3.bias -= lr * self.conv2_3_bias_momentum
+            self.conv2_4.weight -= lr * self.conv2_4_weight_momentum
+            self.conv2_4.bias -= lr * self.conv2_4_bias_momentum
+            self.conv2_5.weight -= lr * self.conv2_5_weight_momentum
+            self.conv2_5.bias -= lr * self.conv2_5_bias_momentum
+            self.conv3.weight -= lr * self.conv3_weight_momentum
+            self.conv3.bias -= lr * self.conv3_bias_momentum
+            self.linear4.weight -= lr * self.linear4_weight_momentum
+            self.linear4.bias -= lr * self.linear4_bias_momentum
+            self.linear4_1.weight -= lr * self.linear4_1_weight_momentum
+            self.linear4_1.bias -= lr * self.linear4_1_bias_momentum
+            self.linear4_2.weight -= lr * self.linear4_2_weight_momentum
+            self.linear4_2.bias -= lr * self.linear4_2_bias_momentum
+            self.linear4_3.weight -= lr * self.linear4_3_weight_momentum
+            self.linear4_3.bias -= lr * self.linear4_3_bias_momentum
+            self.linear4_4.weight -= lr * self.linear4_4_weight_momentum
+            self.linear4_4.bias -= lr * self.linear4_4_bias_momentum
+            self.linear4_5.weight -= lr * self.linear4_5_weight_momentum
+            self.linear4_5.bias -= lr * self.linear4_5_bias_momentum
+            self.linear5.weight -= lr * self.linear5_weight_momentum
+            self.linear5.bias -= lr * self.linear5_bias_momentum
+
+
+class SkipConnectionModel1(nn.Module):
+    def __init__(
+        self,
+        input_size: int = 3072,
+        n_classes: int = 100,
+        activation_function: typing.Callable = sigmoid,
+    ):
+        super(SkipConnectionModel1, self).__init__()
+
+        self.input_size = input_size
+        self.n_classes = n_classes
+        self.activation_fn = activation_function
+
+        # -- Layer Definitions -- #
+        # layer 1
+        self.conv1 = nn.Conv2d(
+            in_channels=3, out_channels=16, kernel_size=5, stride=1, padding=2
+        )
+        self.pool1 = nn.MaxPool2d(kernel_size=3, stride=1)
+
+        # layer 2
+        self.conv2 = nn.Conv2d(
+            in_channels=16, out_channels=32, kernel_size=6, stride=2, padding=0
+        )
+        self.conv2_1 = nn.Conv2d(
+            in_channels=32, out_channels=32, kernel_size=5, stride=1, padding=2
+        )
+        self.conv2_2 = nn.Conv2d(
+            in_channels=32, out_channels=32, kernel_size=5, stride=1, padding=2
+        )
+        self.conv2_3 = nn.Conv2d(
+            in_channels=32, out_channels=32, kernel_size=5, stride=1, padding=2
+        )
+        self.conv2_4 = nn.Conv2d(
+            in_channels=32, out_channels=32, kernel_size=5, stride=1, padding=2
+        )
+        self.conv2_5 = nn.Conv2d(
+            in_channels=32, out_channels=32, kernel_size=5, stride=1, padding=2
+        )
+        self.pool2 = nn.MaxPool2d(kernel_size=3, stride=1)
+
+        # layer 3
+        self.conv3 = nn.Conv2d(
+            in_channels=32, out_channels=64, kernel_size=3, stride=2, padding=0
+        )
+        self.pool3 = nn.MaxPool2d(kernel_size=3, stride=2)
+
+        # layer 4
+        # After first three layers we're left with [N_examples, 64, 2, 2]
+        self.linear4 = nn.Linear(64 * 2 * 2, 128)
+        self.linear4_1 = nn.Linear(128, 128)
+        self.linear4_2 = nn.Linear(128, 128)
+        self.linear4_3 = nn.Linear(128, 128)
+        self.linear4_4 = nn.Linear(128, 128)
+        self.linear4_5 = nn.Linear(128, 128)
+
+        # layer 5
+        self.linear5 = nn.Linear(128, n_classes)
+
+        # Storage tensors for momentum
+        self.conv1_weight_momentum = torch.zeros_like(self.conv1.weight).to(
+            device=device
+        )
+        self.conv1_bias_momentum = torch.zeros_like(self.conv1.bias).to(device=device)
+        self.conv2_weight_momentum = torch.zeros_like(self.conv2.weight).to(
+            device=device
+        )
+        self.conv2_bias_momentum = torch.zeros_like(self.conv2.bias).to(device=device)
+
+        self.conv2_1_weight_momentum = torch.zeros_like(self.conv2_1.weight).to(
+            device=device
+        )
+        self.conv2_1_bias_momentum = torch.zeros_like(self.conv2_1.bias).to(
+            device=device
+        )
+        self.conv2_2_weight_momentum = torch.zeros_like(self.conv2_2.weight).to(
+            device=device
+        )
+        self.conv2_2_bias_momentum = torch.zeros_like(self.conv2_2.bias).to(
+            device=device
+        )
+        self.conv2_3_weight_momentum = torch.zeros_like(self.conv2_3.weight).to(
+            device=device
+        )
+        self.conv2_3_bias_momentum = torch.zeros_like(self.conv2_3.bias).to(
+            device=device
+        )
+        self.conv2_4_weight_momentum = torch.zeros_like(self.conv2_4.weight).to(
+            device=device
+        )
+        self.conv2_4_bias_momentum = torch.zeros_like(self.conv2_4.bias).to(
+            device=device
+        )
+        self.conv2_5_weight_momentum = torch.zeros_like(self.conv2_5.weight).to(
+            device=device
+        )
+        self.conv2_5_bias_momentum = torch.zeros_like(self.conv2_5.bias).to(
+            device=device
+        )
+        self.conv3_weight_momentum = torch.zeros_like(self.conv3.weight).to(
+            device=device
+        )
+        self.conv3_bias_momentum = torch.zeros_like(self.conv3.bias).to(device=device)
+        self.linear4_weight_momentum = torch.zeros_like(self.linear4.weight).to(
+            device=device
+        )
+        self.linear4_bias_momentum = torch.zeros_like(self.linear4.bias).to(
+            device=device
+        )
+        self.linear4_1_weight_momentum = torch.zeros_like(self.linear4_1.weight).to(
+            device=device
+        )
+        self.linear4_1_bias_momentum = torch.zeros_like(self.linear4_1.bias).to(
+            device=device
+        )
+        self.linear4_2_weight_momentum = torch.zeros_like(self.linear4_2.weight).to(
+            device=device
+        )
+        self.linear4_2_bias_momentum = torch.zeros_like(self.linear4_2.bias).to(
+            device=device
+        )
+        self.linear4_3_weight_momentum = torch.zeros_like(self.linear4_3.weight).to(
+            device=device
+        )
+        self.linear4_3_bias_momentum = torch.zeros_like(self.linear4_3.bias).to(
+            device=device
+        )
+        self.linear4_4_weight_momentum = torch.zeros_like(self.linear4_4.weight).to(
+            device=device
+        )
+        self.linear4_4_bias_momentum = torch.zeros_like(self.linear4_4.bias).to(
+            device=device
+        )
+        self.linear4_5_weight_momentum = torch.zeros_like(self.linear4_5.weight).to(
+            device=device
+        )
+        self.linear4_5_bias_momentum = torch.zeros_like(self.linear4_5.bias).to(
+            device=device
+        )
+        self.linear5_weight_momentum = torch.zeros_like(self.linear5.weight).to(
+            device=device
+        )
+        self.linear5_bias_momentum = torch.zeros_like(self.linear5.bias).to(
+            device=device
+        )
+
+    def forward(self, x: torch.tensor) -> torch.tensor:
+        # Layer 1
+        x = self.conv1(x)
+        x = self.activation_fn(x)
+        x = self.pool1(x)
+
+        # Layer 2
+        x = self.conv2(x)
+        x_1 = self.activation_fn(x)  # rename for skip connection
+
+        # Layer 3
+        x_2 = self.conv2_1(x_1) + x  # Skip connection #1
+        x = self.activation_fn(x_2)
+
+        # Layer 4
+        x_1 = self.conv2_2(x)  # rename for skip connection
+        x_2 = self.activation_fn(x_1)
+
+        # Layer 5
+        x_3 = self.conv2_3(x_2)
+        x_4 = self.activation_fn(x_3) + x  # Skip connection #2
+
+        # Layer 6
+        x = self.conv2_4(x_4)
+        x = self.activation_fn(x)
+
+        # Layer 7
+        x = self.conv2_5(x)
+        x = self.activation_fn(x)
+        x = self.pool2(x)
+
+        # Layer 8
+        x = self.conv3(x)
+        x = self.activation_fn(x)
+        x = self.pool3(x)
+
+        # Flatten between convolutional and fully connected layers
+        x = x.flatten(1)
+
+        # Layer 9
+        x = self.linear4(x)
+        x_1 = self.activation_fn(x)  # rename for skip connection
+
+        # Layer 10
+        x_2 = self.linear4_1(x_1) + x  # Skip connection #3
+        x = self.activation_fn(x_2)
+
+        # Layer 11
+        x = self.linear4_2(x)
+        x = self.activation_fn(x)
+
+        # Layer 12
+        x = self.linear4_3(x)
+        x = self.activation_fn(x)
+
+        # Layer 13
+        x = self.linear4_4(x)
+        x = self.activation_fn(x)
+
+        # Layer 14
+        x = self.linear4_5(x)
+        x = self.activation_fn(x)
+
+        # Layer 15
+        x = self.linear5(x)
+
+        # Calculate probabilities from logits
+        output = softmax(x)
+
+        return output
+
+    def backward(
+        self, loss: torch.tensor, lr: float = 0.01, alpha: float = 0.0
+    ) -> None:
+        # Reset parameter gradients
+        # NOTE: No learnable parameters for activation functions or pooling layers
+        self.conv1.weight.grad = None
+        self.conv1.bias.grad = None
+        self.conv2.weight.grad = None
+        self.conv2.bias.grad = None
+        self.conv2_1.weight.grad = None
+        self.conv2_1.bias.grad = None
+        self.conv2_2.weight.grad = None
+        self.conv2_2.bias.grad = None
+        self.conv2_3.weight.grad = None
+        self.conv2_3.bias.grad = None
+        self.conv2_4.weight.grad = None
+        self.conv2_4.bias.grad = None
+        self.conv2_5.weight.grad = None
+        self.conv2_5.bias.grad = None
+        self.conv3.weight.grad = None
+        self.conv3.bias.grad = None
+        self.linear4.weight.grad = None
+        self.linear4.bias.grad = None
+        self.linear4_1.weight.grad = None
+        self.linear4_1.bias.grad = None
+        self.linear4_2.weight.grad = None
+        self.linear4_2.bias.grad = None
+        self.linear4_3.weight.grad = None
+        self.linear4_3.bias.grad = None
+        self.linear4_4.weight.grad = None
+        self.linear4_4.bias.grad = None
+        self.linear4_5.weight.grad = None
+        self.linear4_5.bias.grad = None
+        self.linear5.weight.grad = None
+        self.linear5.bias.grad = None
+
+        # Update gradients
+        loss.backward()
+
+        # Update parameters
+        with torch.no_grad():
+            # Update momentum
+            self.conv1_weight_momentum = (
+                alpha * self.conv1_weight_momentum + self.conv1.weight.grad
+            )
+            self.conv1_bias_momentum = (
+                alpha * self.conv1_bias_momentum + self.conv1.bias.grad
+            )
+            self.conv2_weight_momentum = (
+                alpha * self.conv2_weight_momentum + self.conv2.weight.grad
+            )
+            self.conv2_bias_momentum = (
+                alpha * self.conv2_bias_momentum + self.conv2.bias.grad
+            )
+            self.conv2_1_weight_momentum = (
+                alpha * self.conv2_1_weight_momentum + self.conv2_1.weight.grad
+            )
+            self.conv2_1_bias_momentum = (
+                alpha * self.conv2_1_bias_momentum + self.conv2_1.bias.grad
+            )
+            self.conv2_2_weight_momentum = (
+                alpha * self.conv2_2_weight_momentum + self.conv2_2.weight.grad
+            )
+            self.conv2_2_bias_momentum = (
+                alpha * self.conv2_2_bias_momentum + self.conv2_2.bias.grad
+            )
+            self.conv2_3_weight_momentum = (
+                alpha * self.conv2_3_weight_momentum + self.conv2_3.weight.grad
+            )
+            self.conv2_3_bias_momentum = (
+                alpha * self.conv2_3_bias_momentum + self.conv2_3.bias.grad
+            )
+            self.conv2_4_weight_momentum = (
+                alpha * self.conv2_4_weight_momentum + self.conv2_4.weight.grad
+            )
+            self.conv2_4_bias_momentum = (
+                alpha * self.conv2_4_bias_momentum + self.conv2_4.bias.grad
+            )
+            self.conv2_5_weight_momentum = (
+                alpha * self.conv2_5_weight_momentum + self.conv2_5.weight.grad
+            )
+            self.conv2_5_bias_momentum = (
+                alpha * self.conv2_5_bias_momentum + self.conv2_5.bias.grad
+            )
+            self.conv3_weight_momentum = (
+                alpha * self.conv3_weight_momentum + self.conv3.weight.grad
+            )
+            self.conv3_bias_momentum = (
+                alpha * self.conv3_bias_momentum + self.conv3.bias.grad
+            )
+            self.linear4_weight_momentum = (
+                alpha * self.linear4_weight_momentum + self.linear4.weight.grad
+            )
+            self.linear4_bias_momentum = (
+                alpha * self.linear4_bias_momentum + self.linear4.bias.grad
+            )
+            self.linear4_1_weight_momentum = (
+                alpha * self.linear4_1_weight_momentum + self.linear4_1.weight.grad
+            )
+            self.linear4_1_bias_momentum = (
+                alpha * self.linear4_1_bias_momentum + self.linear4_1.bias.grad
+            )
+            self.linear4_2_weight_momentum = (
+                alpha * self.linear4_2_weight_momentum + self.linear4_2.weight.grad
+            )
+            self.linear4_2_bias_momentum = (
+                alpha * self.linear4_2_bias_momentum + self.linear4_2.bias.grad
+            )
+            self.linear4_3_weight_momentum = (
+                alpha * self.linear4_3_weight_momentum + self.linear4_3.weight.grad
+            )
+            self.linear4_3_bias_momentum = (
+                alpha * self.linear4_3_bias_momentum + self.linear4_3.bias.grad
+            )
+            self.linear4_4_weight_momentum = (
+                alpha * self.linear4_4_weight_momentum + self.linear4_4.weight.grad
+            )
+            self.linear4_4_bias_momentum = (
+                alpha * self.linear4_4_bias_momentum + self.linear4_4.bias.grad
+            )
+            self.linear4_5_weight_momentum = (
+                alpha * self.linear4_5_weight_momentum + self.linear4_5.weight.grad
+            )
+            self.linear4_5_bias_momentum = (
+                alpha * self.linear4_5_bias_momentum + self.linear4_5.bias.grad
+            )
+            self.linear5_weight_momentum = (
+                alpha * self.linear5_weight_momentum + self.linear5.weight.grad
+            )
+            self.linear5_bias_momentum = (
+                alpha * self.linear5_bias_momentum + self.linear5.bias.grad
+            )
+
+            self.conv1.weight -= lr * self.conv1_weight_momentum
+            self.conv1.bias -= lr * self.conv1_bias_momentum
+            self.conv2.weight -= lr * self.conv2_weight_momentum
+            self.conv2.bias -= lr * self.conv2_bias_momentum
+            self.conv2_1.weight -= lr * self.conv2_1_weight_momentum
+            self.conv2_1.bias -= lr * self.conv2_1_bias_momentum
+            self.conv2_2.weight -= lr * self.conv2_2_weight_momentum
+            self.conv2_2.bias -= lr * self.conv2_2_bias_momentum
+            self.conv2_3.weight -= lr * self.conv2_3_weight_momentum
+            self.conv2_3.bias -= lr * self.conv2_3_bias_momentum
+            self.conv2_4.weight -= lr * self.conv2_4_weight_momentum
+            self.conv2_4.bias -= lr * self.conv2_4_bias_momentum
+            self.conv2_5.weight -= lr * self.conv2_5_weight_momentum
+            self.conv2_5.bias -= lr * self.conv2_5_bias_momentum
+            self.conv3.weight -= lr * self.conv3_weight_momentum
+            self.conv3.bias -= lr * self.conv3_bias_momentum
+            self.linear4.weight -= lr * self.linear4_weight_momentum
+            self.linear4.bias -= lr * self.linear4_bias_momentum
+            self.linear4_1.weight -= lr * self.linear4_1_weight_momentum
+            self.linear4_1.bias -= lr * self.linear4_1_bias_momentum
+            self.linear4_2.weight -= lr * self.linear4_2_weight_momentum
+            self.linear4_2.bias -= lr * self.linear4_2_bias_momentum
+            self.linear4_3.weight -= lr * self.linear4_3_weight_momentum
+            self.linear4_3.bias -= lr * self.linear4_3_bias_momentum
+            self.linear4_4.weight -= lr * self.linear4_4_weight_momentum
+            self.linear4_4.bias -= lr * self.linear4_4_bias_momentum
+            self.linear4_5.weight -= lr * self.linear4_5_weight_momentum
+            self.linear4_5.bias -= lr * self.linear4_5_bias_momentum
+            self.linear5.weight -= lr * self.linear5_weight_momentum
+            self.linear5.bias -= lr * self.linear5_bias_momentum
+
+
+class SkipConnectionModel2(nn.Module):
+    def __init__(
+        self,
+        input_size: int = 3072,
+        n_classes: int = 100,
+        activation_function: typing.Callable = sigmoid,
+    ):
+        super(SkipConnectionModel2, self).__init__()
+
+        self.input_size = input_size
+        self.n_classes = n_classes
+        self.activation_fn = activation_function
+
+        # -- Layer Definitions -- #
+        # layer 1
+        self.conv1 = nn.Conv2d(
+            in_channels=3, out_channels=16, kernel_size=5, stride=1, padding=2
+        )
+        self.pool1 = nn.MaxPool2d(kernel_size=3, stride=1)
+
+        # layer 2
+        self.conv2 = nn.Conv2d(
+            in_channels=16, out_channels=32, kernel_size=6, stride=2, padding=0
+        )
+        self.conv2_1 = nn.Conv2d(
+            in_channels=32, out_channels=32, kernel_size=5, stride=1, padding=2
+        )
+        self.conv2_2 = nn.Conv2d(
+            in_channels=32, out_channels=32, kernel_size=5, stride=1, padding=2
+        )
+        self.conv2_3 = nn.Conv2d(
+            in_channels=32, out_channels=32, kernel_size=5, stride=1, padding=2
+        )
+        self.conv2_4 = nn.Conv2d(
+            in_channels=32, out_channels=32, kernel_size=5, stride=1, padding=2
+        )
+        self.conv2_5 = nn.Conv2d(
+            in_channels=32, out_channels=32, kernel_size=5, stride=1, padding=2
+        )
+        self.pool2 = nn.MaxPool2d(kernel_size=3, stride=1)
+
+        # layer 3
+        self.conv3 = nn.Conv2d(
+            in_channels=32, out_channels=64, kernel_size=3, stride=2, padding=0
+        )
+        self.pool3 = nn.MaxPool2d(kernel_size=3, stride=2)
+
+        # layer 4
+        # After first three layers we're left with [N_examples, 64, 2, 2]
+        self.linear4 = nn.Linear(64 * 2 * 2, 128)
+        self.linear4_1 = nn.Linear(128, 128)
+        self.linear4_2 = nn.Linear(128, 128)
+        self.linear4_3 = nn.Linear(128, 128)
+        self.linear4_4 = nn.Linear(128, 128)
+        self.linear4_5 = nn.Linear(128, 128)
+
+        # layer 5
+        self.linear5 = nn.Linear(128, n_classes)
+
+        # Storage tensors for momentum
+        self.conv1_weight_momentum = torch.zeros_like(self.conv1.weight).to(
+            device=device
+        )
+        self.conv1_bias_momentum = torch.zeros_like(self.conv1.bias).to(device=device)
+        self.conv2_weight_momentum = torch.zeros_like(self.conv2.weight).to(
+            device=device
+        )
+        self.conv2_bias_momentum = torch.zeros_like(self.conv2.bias).to(device=device)
+
+        self.conv2_1_weight_momentum = torch.zeros_like(self.conv2_1.weight).to(
+            device=device
+        )
+        self.conv2_1_bias_momentum = torch.zeros_like(self.conv2_1.bias).to(
+            device=device
+        )
+        self.conv2_2_weight_momentum = torch.zeros_like(self.conv2_2.weight).to(
+            device=device
+        )
+        self.conv2_2_bias_momentum = torch.zeros_like(self.conv2_2.bias).to(
+            device=device
+        )
+        self.conv2_3_weight_momentum = torch.zeros_like(self.conv2_3.weight).to(
+            device=device
+        )
+        self.conv2_3_bias_momentum = torch.zeros_like(self.conv2_3.bias).to(
+            device=device
+        )
+        self.conv2_4_weight_momentum = torch.zeros_like(self.conv2_4.weight).to(
+            device=device
+        )
+        self.conv2_4_bias_momentum = torch.zeros_like(self.conv2_4.bias).to(
+            device=device
+        )
+        self.conv2_5_weight_momentum = torch.zeros_like(self.conv2_5.weight).to(
+            device=device
+        )
+        self.conv2_5_bias_momentum = torch.zeros_like(self.conv2_5.bias).to(
+            device=device
+        )
+        self.conv3_weight_momentum = torch.zeros_like(self.conv3.weight).to(
+            device=device
+        )
+        self.conv3_bias_momentum = torch.zeros_like(self.conv3.bias).to(device=device)
+        self.linear4_weight_momentum = torch.zeros_like(self.linear4.weight).to(
+            device=device
+        )
+        self.linear4_bias_momentum = torch.zeros_like(self.linear4.bias).to(
+            device=device
+        )
+        self.linear4_1_weight_momentum = torch.zeros_like(self.linear4_1.weight).to(
+            device=device
+        )
+        self.linear4_1_bias_momentum = torch.zeros_like(self.linear4_1.bias).to(
+            device=device
+        )
+        self.linear4_2_weight_momentum = torch.zeros_like(self.linear4_2.weight).to(
+            device=device
+        )
+        self.linear4_2_bias_momentum = torch.zeros_like(self.linear4_2.bias).to(
+            device=device
+        )
+        self.linear4_3_weight_momentum = torch.zeros_like(self.linear4_3.weight).to(
+            device=device
+        )
+        self.linear4_3_bias_momentum = torch.zeros_like(self.linear4_3.bias).to(
+            device=device
+        )
+        self.linear4_4_weight_momentum = torch.zeros_like(self.linear4_4.weight).to(
+            device=device
+        )
+        self.linear4_4_bias_momentum = torch.zeros_like(self.linear4_4.bias).to(
+            device=device
+        )
+        self.linear4_5_weight_momentum = torch.zeros_like(self.linear4_5.weight).to(
+            device=device
+        )
+        self.linear4_5_bias_momentum = torch.zeros_like(self.linear4_5.bias).to(
+            device=device
+        )
+        self.linear5_weight_momentum = torch.zeros_like(self.linear5.weight).to(
+            device=device
+        )
+        self.linear5_bias_momentum = torch.zeros_like(self.linear5.bias).to(
+            device=device
+        )
+
+    def forward(self, x: torch.tensor) -> torch.tensor:
+        # Layer 1
+        x = self.conv1(x)
+        x = self.activation_fn(x)
+        x = self.pool1(x)
+
+        # Layer 2
+        x_1 = self.conv2(x)  # rename for skip connection
+        x = self.activation_fn(x_1)
+
+        # Layer 3
+        x = self.conv2_1(x)
+        x = self.activation_fn(x)
+
+        # Layer 4
+        x = self.conv2_2(x)
+        x_2 = self.activation_fn(x) + x_1  # Skip connection #1
+
+        # Layer 5
+        x = self.conv2_3(x_2)
+        x = self.activation_fn(x)
+
+        # Layer 6
+        x = self.conv2_4(x)
+        x = self.activation_fn(x)
+
+        # Layer 7
+        x = self.conv2_5(x)
+        x = self.activation_fn(x) + x_2  # Skip connection #2
+        x = self.pool2(x)
+
+        # Layer 8
+        x = self.conv3(x)
+        x = self.activation_fn(x)
+        x = self.pool3(x)
+
+        # Flatten between convolutional and fully connected layers
+        x = x.flatten(1)
+
+        # Layer 9
+        x_1 = self.linear4(x)  # rename for skip connection
+        x = self.activation_fn(x_1)
+
+        # Layer 10
+        x = self.linear4_1(x)
+        x = self.activation_fn(x)
+
+        # Layer 11
+        x = self.linear4_2(x)
+        x = self.activation_fn(x)
+
+        # Layer 12
+        x = self.linear4_3(x)
+        x = self.activation_fn(x)
+
+        # Layer 13
+        x = self.linear4_4(x)
+        x = self.activation_fn(x)
+
+        # Layer 14
+        x = self.linear4_5(x)
+        x = self.activation_fn(x) + x_1  # Skip connection #3
+
+        # Layer 15
+        x = self.linear5(x)
+
+        # Calculate probabilities from logits
+        output = softmax(x)
+
+        return output
+
+    def backward(
+        self, loss: torch.tensor, lr: float = 0.01, alpha: float = 0.0
+    ) -> None:
+        # Reset parameter gradients
+        # NOTE: No learnable parameters for activation functions or pooling layers
+        self.conv1.weight.grad = None
+        self.conv1.bias.grad = None
+        self.conv2.weight.grad = None
+        self.conv2.bias.grad = None
+        self.conv2_1.weight.grad = None
+        self.conv2_1.bias.grad = None
+        self.conv2_2.weight.grad = None
+        self.conv2_2.bias.grad = None
+        self.conv2_3.weight.grad = None
+        self.conv2_3.bias.grad = None
+        self.conv2_4.weight.grad = None
+        self.conv2_4.bias.grad = None
+        self.conv2_5.weight.grad = None
+        self.conv2_5.bias.grad = None
+        self.conv3.weight.grad = None
+        self.conv3.bias.grad = None
+        self.linear4.weight.grad = None
+        self.linear4.bias.grad = None
+        self.linear4_1.weight.grad = None
+        self.linear4_1.bias.grad = None
+        self.linear4_2.weight.grad = None
+        self.linear4_2.bias.grad = None
+        self.linear4_3.weight.grad = None
+        self.linear4_3.bias.grad = None
+        self.linear4_4.weight.grad = None
+        self.linear4_4.bias.grad = None
+        self.linear4_5.weight.grad = None
+        self.linear4_5.bias.grad = None
+        self.linear5.weight.grad = None
+        self.linear5.bias.grad = None
+
+        # Update gradients
+        loss.backward()
+
+        # Update parameters
+        with torch.no_grad():
+            # Update momentum
+            self.conv1_weight_momentum = (
+                alpha * self.conv1_weight_momentum + self.conv1.weight.grad
+            )
+            self.conv1_bias_momentum = (
+                alpha * self.conv1_bias_momentum + self.conv1.bias.grad
+            )
+            self.conv2_weight_momentum = (
+                alpha * self.conv2_weight_momentum + self.conv2.weight.grad
+            )
+            self.conv2_bias_momentum = (
+                alpha * self.conv2_bias_momentum + self.conv2.bias.grad
+            )
+            self.conv2_1_weight_momentum = (
+                alpha * self.conv2_1_weight_momentum + self.conv2_1.weight.grad
+            )
+            self.conv2_1_bias_momentum = (
+                alpha * self.conv2_1_bias_momentum + self.conv2_1.bias.grad
+            )
+            self.conv2_2_weight_momentum = (
+                alpha * self.conv2_2_weight_momentum + self.conv2_2.weight.grad
+            )
+            self.conv2_2_bias_momentum = (
+                alpha * self.conv2_2_bias_momentum + self.conv2_2.bias.grad
+            )
+            self.conv2_3_weight_momentum = (
+                alpha * self.conv2_3_weight_momentum + self.conv2_3.weight.grad
+            )
+            self.conv2_3_bias_momentum = (
+                alpha * self.conv2_3_bias_momentum + self.conv2_3.bias.grad
+            )
+            self.conv2_4_weight_momentum = (
+                alpha * self.conv2_4_weight_momentum + self.conv2_4.weight.grad
+            )
+            self.conv2_4_bias_momentum = (
+                alpha * self.conv2_4_bias_momentum + self.conv2_4.bias.grad
+            )
+            self.conv2_5_weight_momentum = (
+                alpha * self.conv2_5_weight_momentum + self.conv2_5.weight.grad
+            )
+            self.conv2_5_bias_momentum = (
+                alpha * self.conv2_5_bias_momentum + self.conv2_5.bias.grad
+            )
+            self.conv3_weight_momentum = (
+                alpha * self.conv3_weight_momentum + self.conv3.weight.grad
+            )
+            self.conv3_bias_momentum = (
+                alpha * self.conv3_bias_momentum + self.conv3.bias.grad
+            )
+            self.linear4_weight_momentum = (
+                alpha * self.linear4_weight_momentum + self.linear4.weight.grad
+            )
+            self.linear4_bias_momentum = (
+                alpha * self.linear4_bias_momentum + self.linear4.bias.grad
+            )
+            self.linear4_1_weight_momentum = (
+                alpha * self.linear4_1_weight_momentum + self.linear4_1.weight.grad
+            )
+            self.linear4_1_bias_momentum = (
+                alpha * self.linear4_1_bias_momentum + self.linear4_1.bias.grad
+            )
+            self.linear4_2_weight_momentum = (
+                alpha * self.linear4_2_weight_momentum + self.linear4_2.weight.grad
+            )
+            self.linear4_2_bias_momentum = (
+                alpha * self.linear4_2_bias_momentum + self.linear4_2.bias.grad
+            )
+            self.linear4_3_weight_momentum = (
+                alpha * self.linear4_3_weight_momentum + self.linear4_3.weight.grad
+            )
+            self.linear4_3_bias_momentum = (
+                alpha * self.linear4_3_bias_momentum + self.linear4_3.bias.grad
+            )
+            self.linear4_4_weight_momentum = (
+                alpha * self.linear4_4_weight_momentum + self.linear4_4.weight.grad
+            )
+            self.linear4_4_bias_momentum = (
+                alpha * self.linear4_4_bias_momentum + self.linear4_4.bias.grad
+            )
+            self.linear4_5_weight_momentum = (
+                alpha * self.linear4_5_weight_momentum + self.linear4_5.weight.grad
+            )
+            self.linear4_5_bias_momentum = (
+                alpha * self.linear4_5_bias_momentum + self.linear4_5.bias.grad
+            )
+            self.linear5_weight_momentum = (
+                alpha * self.linear5_weight_momentum + self.linear5.weight.grad
+            )
+            self.linear5_bias_momentum = (
+                alpha * self.linear5_bias_momentum + self.linear5.bias.grad
+            )
+
+            self.conv1.weight -= lr * self.conv1_weight_momentum
+            self.conv1.bias -= lr * self.conv1_bias_momentum
+            self.conv2.weight -= lr * self.conv2_weight_momentum
+            self.conv2.bias -= lr * self.conv2_bias_momentum
+            self.conv2_1.weight -= lr * self.conv2_1_weight_momentum
+            self.conv2_1.bias -= lr * self.conv2_1_bias_momentum
+            self.conv2_2.weight -= lr * self.conv2_2_weight_momentum
+            self.conv2_2.bias -= lr * self.conv2_2_bias_momentum
+            self.conv2_3.weight -= lr * self.conv2_3_weight_momentum
+            self.conv2_3.bias -= lr * self.conv2_3_bias_momentum
+            self.conv2_4.weight -= lr * self.conv2_4_weight_momentum
+            self.conv2_4.bias -= lr * self.conv2_4_bias_momentum
+            self.conv2_5.weight -= lr * self.conv2_5_weight_momentum
+            self.conv2_5.bias -= lr * self.conv2_5_bias_momentum
+            self.conv3.weight -= lr * self.conv3_weight_momentum
+            self.conv3.bias -= lr * self.conv3_bias_momentum
+            self.linear4.weight -= lr * self.linear4_weight_momentum
+            self.linear4.bias -= lr * self.linear4_bias_momentum
+            self.linear4_1.weight -= lr * self.linear4_1_weight_momentum
+            self.linear4_1.bias -= lr * self.linear4_1_bias_momentum
+            self.linear4_2.weight -= lr * self.linear4_2_weight_momentum
+            self.linear4_2.bias -= lr * self.linear4_2_bias_momentum
+            self.linear4_3.weight -= lr * self.linear4_3_weight_momentum
+            self.linear4_3.bias -= lr * self.linear4_3_bias_momentum
+            self.linear4_4.weight -= lr * self.linear4_4_weight_momentum
+            self.linear4_4.bias -= lr * self.linear4_4_bias_momentum
+            self.linear4_5.weight -= lr * self.linear4_5_weight_momentum
+            self.linear4_5.bias -= lr * self.linear4_5_bias_momentum
+            self.linear5.weight -= lr * self.linear5_weight_momentum
+            self.linear5.bias -= lr * self.linear5_bias_momentum
+
+
+# %% ----- Evaluating the Dataset Difficulty: Training -----
+# Create an instance of the model
+model = TwoLayerNetwork().to(device)
+
+# Train the model
+train_model(
+    model=model,
+    train_loader=train_loader,
+    test_loader=test_loader,
+    device=device,
+    wandb_tags=["baseline", "shallow"],
+    model_name="baseline_shallow",
+)
 
 # %% ----- Building a Baseline Deep Network: Training -----
-# # Create an instance of the model
-# model = BaselineDeepNetwork().to(device)
+# Create an instance of the model
+model = BaselineDeepNetwork().to(device)
 
-# # Train the model
-# train_model(
-#     model=model,
-#     train_loader=train_loader,
-#     test_loader=test_loader,
-#     device=device,
-#     wandb_tags=["baseline", "deep"],
-#     model_name="baseline_deep",
-# )
+# Train the model
+train_model(
+    model=model,
+    train_loader=train_loader,
+    test_loader=test_loader,
+    device=device,
+    wandb_tags=["baseline", "deep"],
+    model_name="baseline_deep",
+)
 
 # %% Part 2
 ########################################
@@ -580,244 +1766,198 @@ def SiLU(z: torch.tensor) -> torch.tensor:
 
 # %% ----- Activation Functions: Training (Pt 1) -----
 
-# # Define a modified deep network, replacing the sigmoid activation function with tanh
-# model = BaselineDeepNetwork(activation_function=tanh).to(device)
+# Define a modified deep network, replacing the sigmoid activation function with tanh
+model = BaselineDeepNetwork(activation_function=tanh).to(device)
 
-# # Train the model
-# train_model(
-#     model=model,
-#     train_loader=train_loader,
-#     test_loader=test_loader,
-#     device=device,
-#     wandb_tags=["tanh_activation", "deep"],
-#     model_name="tanh_deep",
-# )
+# Train the model
+train_model(
+    model=model,
+    train_loader=train_loader,
+    test_loader=test_loader,
+    device=device,
+    patience=50,
+    wandb_tags=["tanh_activation", "deep", "repeat"],
+    model_name="tanh_deep",
+)
 
 # %% ----- Activation Functions: Training (Pt 2) -----
 
-# # Define a modified deep network, replacing the sigmoid activation function with SiLU
-# model = BaselineDeepNetwork(activation_function=SiLU).to(device)
+# Define a modified deep network, replacing the sigmoid activation function with SiLU
+model = BaselineDeepNetwork(activation_function=SiLU).to(device)
 
-# # Train the model
-# train_model(
-#     model=model,
-#     train_loader=train_loader,
-#     test_loader=test_loader,
-#     device=device,
-#     wandb_tags=["silu_activation", "deep"],
-#     model_name="silu_deep",
-# )
+# Train the model
+train_model(
+    model=model,
+    train_loader=train_loader,
+    test_loader=test_loader,
+    device=device,
+    wandb_tags=["SiLU_activation", "deep", "for_report"],
+    model_name="SiLU_deep",
+)
 
 # %% ----- Optimizers: Mini-batch SGD -----
-# # CIFAR-100 has 50,000 training examples, so we can experiment with some large batch sizes
-# batch_sizes = [64, 256, 1024]
+activation_function = tanh
+activation_function_name = "tanh"
 
-# # Train the best-performing deep network using mini-batch SGD with each batch size
-# for batch_size in batch_sizes:
-#     loader_train = DataLoader(train_set, batch_size=batch_size, shuffle=True)
-#     loader_test = DataLoader(test_set, batch_size=batch_size, shuffle=False)
-#     logging.info(
-#         f"Training loader created with batch size: {batch_size}, "
-#         f"resulting in {len(loader_train)} mini-batches."
-#     )
+# CIFAR-100 has 50,000 training examples, so we can experiment with some large batch sizes
+batch_sizes = [64, 256, 1024]
 
-#     # TODO: Find best activation function model
-#     # Define our model
-#     model = BaselineDeepNetwork(activation_function=tanh).to(device)
+# Train the best-performing deep network using mini-batch SGD with each batch size
+for batch_size in batch_sizes:
+    loader_train = DataLoader(train_set, batch_size=batch_size, shuffle=True)
+    loader_test = DataLoader(test_set, batch_size=batch_size, shuffle=False)
+    logging.info(
+        f"Training loader created with batch size: {batch_size}, "
+        f"resulting in {len(loader_train)} mini-batches."
+    )
 
-#     # Train the model
-#     train_model(
-#         model=model,
-#         train_loader=loader_train,
-#         test_loader=loader_test,
-#         device=device,
-#         wandb_tags=["tanh", f"b={batch_size}", "deep"],
-#         model_name=f"tanh_b={batch_size}_deep",
-#     )
+    # Define our model
+    model = BaselineDeepNetwork(activation_function=activation_function).to(device)
+    model_name = f"{activation_function_name}_b={batch_size}_deep"
+
+    # Train the model
+    train_model(
+        model=model,
+        train_loader=loader_train,
+        test_loader=loader_test,
+        device=device,
+        wandb_tags=[f"{activation_function_name}", f"b={batch_size}", "deep"],
+        model_name=model_name,
+    )
 
 # %% ----- Optimizers: Mini-batch SGD with Momentum -----
-# # TODO: Pick best mini-batch size from previous step
-# batch_size = 1024
+# Pick best mini-batch size from previous step
+batch_size = 64
 
-# # Load data
-# loader_train = DataLoader(train_set, batch_size=batch_size, shuffle=True)
-# loader_test = DataLoader(test_set, batch_size=batch_size, shuffle=False)
+# Define the best activation function
+activation_function = tanh
+activation_function_name = "tanh"
 
-# # TODO: Define the best activation function
-# activation_function = SiLU
+# Load data
+loader_train = DataLoader(train_set, batch_size=batch_size, shuffle=True)
+loader_test = DataLoader(test_set, batch_size=batch_size, shuffle=False)
 
-# # Define a set of rates to use for momentum
-# momentum_rates = [0.9, 0.5, 1.5]
+# Define a set of rates to use for momentum
+momentum_rates = [1.5]
 
-# # Train the best-performing deep network using each rate
-# for momentum_rate in momentum_rates:
-#     # Create an instance of the model
-#     model = BaselineDeepNetwork(activation_function=activation_function)
+# Train the best-performing deep network using each rate
+for momentum_rate in momentum_rates:
+    # Create an instance of the model
+    model = BaselineDeepNetwork(activation_function=activation_function)
+    model_name = (
+        f"{activation_function_name}_deep_model_b={batch_size}_alpha={momentum_rate}"
+    )
 
-#     # Train the model using momentum
-#     model, training_curve = train_model(
-#         model=model,
-#         train_loader=loader_train,
-#         test_loader=loader_test,
-#         device=device,
-#         alpha=momentum_rate,
-#     )
+    # Train the model using momentum
+    train_model(
+        model=model,
+        train_loader=loader_train,
+        test_loader=loader_test,
+        device=device,
+        alpha=momentum_rate,
+        wandb_tags=[
+            activation_function_name,
+            f"b={batch_size}",
+            f"alpha={momentum_rate}",
+            "deep",
+            "for_report",
+        ],
+        model_name=model_name,
+    )
 
-#     # Save the trained model
-#     save_model(
-#         model=model,
-#         training_curve=training_curve,
-#         name=f"silu_deep_model_b={batch_size}_alpha={momentum_rate}",  # TODO: CHANGE ME! I should be named after the model with the best activation function
-#     )
 
-# # %% Part 3
+# %% Part 3
 # ######################
 # ## Skip Connections ##
 # ######################
 
-# # %% ----- Extending the Model: Definitions -----
+# %% ----- Extending the Model: Training -----
+# Setup best options from prior steps
+batch_size = 64
+activation_function = tanh
+activation_function_name = "tanh"
+momentum_rate = 0.5
 
+# Load data
+loader_train = DataLoader(train_set, batch_size=batch_size, shuffle=True)
+loader_test = DataLoader(test_set, batch_size=batch_size, shuffle=False)
 
-# # Define a baseline network for deep learning
-# class ExtendedDeepModel(nn.Module):
+# Create an instance of the extended network
+model = ExtendedDeepModel(activation_function=activation_function)
+model_name = f"{activation_function_name}_extended_deep_model_b={batch_size}_alpha={momentum_rate}"
 
-#     def __init__(
-#         self,
-#         input_size: int = 3072,
-#         n_classes: int = 100,
-#         activation_function: typing.Callable = sigmoid,
-#     ):
-#         super(ExtendedDeepModel, self).__init__()
+# Train the model using momentum
+train_model(
+    model=model,
+    train_loader=loader_train,
+    test_loader=loader_test,
+    device=device,
+    alpha=momentum_rate,
+    patience=50,
+    wandb_tags=[
+        activation_function_name,
+        f"b={batch_size}",
+        f"alpha={momentum_rate}",
+        "extended_deep",
+        "for_report",
+    ],
+    model_name=model_name,
+    track_norms=True,
+)
 
-#         self.input_size = input_size
-#         self.n_classes = n_classes
-#         self.activation_fn = activation_function
-#         self.first_pass = True  # For SGD with momentum
+# %% ----- Training Skip Connection #1 -----
+# Setup best options from prior steps
+batch_size = 64
+activation_function = tanh
+activation_function_name = "tanh"
+momentum_rate = 0.5
 
-#         # -- Layer Definitions -- #
-#         # layer 1
-#         self.conv1 = nn.Conv2d(
-#             in_channels=3, out_channels=24, kernel_size=5, stride=1, padding=2
-#         )
-#         self.pool1 = nn.MaxPool2d(kernel_size=3, stride=1)
+# Load data
+loader_train = DataLoader(train_set, batch_size=batch_size, shuffle=True)
+loader_test = DataLoader(test_set, batch_size=batch_size, shuffle=False)
 
-#         # layer 2
-#         self.conv2 = nn.Conv2d(
-#             in_channels=24, out_channels=48, kernel_size=6, stride=2, padding=0
-#         )
+# Create an instance of the first skip connection network
+model = SkipConnectionModel1(activation_function=activation_function)
+model_name = f"SkipConnection1"
 
-#         # extended layers in layer 2
-#         self.conv2_1 = nn.Conv2d(
-#             in_channels=48, out_channels=48, kernel_size=6, stride=2, padding=9
-#         )
-#         self.conv2_2 = nn.Conv2d(
-#             in_channels=48, out_channels=48, kernel_size=6, stride=2, padding=9
-#         )
-#         self.conv2_3 = nn.Conv2d(
-#             in_channels=48, out_channels=48, kernel_size=6, stride=2, padding=9
-#         )
-#         self.conv2_4 = nn.Conv2d(
-#             in_channels=48, out_channels=48, kernel_size=6, stride=2, padding=9
-#         )
-#         self.conv2_5 = nn.Conv2d(
-#             in_channels=48, out_channels=48, kernel_size=6, stride=2, padding=9
-#         )
+# Train the model using momentum
+train_model(
+    model=model,
+    train_loader=loader_train,
+    test_loader=loader_test,
+    device=device,
+    alpha=momentum_rate,
+    patience=50,
+    wandb_tags=[
+        activation_function_name,
+        f"b={batch_size}",
+        f"alpha={momentum_rate}",
+        "skip_connection_1",
+        "for_report",
+    ],
+    model_name=model_name,
+    track_norms=True,
+)
 
-#         # pooling for layer 2
-#         self.pool2 = nn.MaxPool2d(kernel_size=3, stride=1)
+# Create an instance of the second skip connection network
+model = SkipConnectionModel2(activation_function=activation_function)
+model_name = f"SkipConnection2"
 
-#         # layer 3
-#         self.conv3 = nn.Conv2d(
-#             in_channels=48, out_channels=96, kernel_size=3, stride=2, padding=0
-#         )
-#         self.pool3 = nn.MaxPool2d(kernel_size=3, stride=2)
-
-#         # layer 4
-#         # After first three layers we're left with [N_examples, 96, 2, 2]
-#         self.linear4 = nn.Linear(96 * 2 * 2, 256)
-
-#         # layer 5
-#         self.linear5 = nn.Linear(256, n_classes)
-
-#     def forward(self, x: torch.tensor) -> torch.tensor:
-#         # Layer 1
-#         x = self.conv1(x)
-#         x = self.activation_fn(x)
-#         x = self.pool1(x)
-
-#         # Layer 2
-#         x = self.conv2(x)
-#         x = self.activation_fn(x)
-#         x = self.conv2_1(x)
-#         x = self.activation_fn(x)
-#         x = self.conv2_2(x)
-#         x = self.activation_fn(x)
-#         x = self.conv2_3(x)
-#         x = self.activation_fn(x)
-#         x = self.conv2_4(x)
-#         x = self.activation_fn(x)
-#         x = self.conv2_5(x)
-#         x = self.activation_fn(x)
-#         x = self.pool2(x)
-
-#         # Layer 3
-#         x = self.conv3(x)
-#         x = self.activation_fn(x)
-#         x = self.pool3(x)
-
-#         # Layer 4
-#         x = x.view(x.size(0), -1)  # flatten
-#         x = self.linear4(x)
-#         x = self.activation_fn(x)
-
-#         # Layer 5
-#         x = self.linear5(x)
-#         output = softmax(x)
-
-#         return output
-
-#     def backward(
-#         self, loss: torch.tensor, lr: float = 0.001, alpha: float = 0.0
-#     ) -> None:
-#         # Reset parameter gradients
-#         # NOTE: No learnable parameters for activation functions or pooling layers
-#         # TODO: Account for additional layers
-#         self.conv1.weight.grad = None
-#         self.conv1.bias.grad = None
-#         self.conv2.weight.grad = None
-#         self.conv2.bias.grad = None
-#         self.conv3.weight.grad = None
-#         self.conv3.bias.grad = None
-#         self.linear4.weight.grad = None
-#         self.linear4.bias.grad = None
-#         self.linear5.weight.grad = None
-#         self.linear5.bias.grad = None
-
-#         # Update gradients
-#         loss.backward()
-
-#         # Update parameters
-#         self.update_parameter(self.conv1.weight, lr=lr, alpha=alpha)
-#         self.update_parameter(self.conv1.bias, lr=lr, alpha=alpha)
-#         self.update_parameter(self.conv2.weight, lr=lr, alpha=alpha)
-#         self.update_parameter(self.conv2.bias, lr=lr, alpha=alpha)
-#         self.update_parameter(self.conv3.weight, lr=lr, alpha=alpha)
-#         self.update_parameter(self.conv3.bias, lr=lr, alpha=alpha)
-#         self.update_parameter(self.linear4.weight, lr=lr, alpha=alpha)
-#         self.update_parameter(self.linear4.bias, lr=lr, alpha=alpha)
-#         self.update_parameter(self.linear5.weight, lr=lr, alpha=alpha)
-#         self.update_parameter(self.linear5.bias, lr=lr, alpha=alpha)
-
-#     def update_parameter(self, parameter, lr, alpha):
-#         # Start-up logic
-#         if self.first_pass:
-#             m = 0
-#             self.first_pass = False
-#         else:
-#             m = parameter.data
-
-#         # Modify the gradient with momentum
-#         grad = m * alpha + parameter.grad
-
-#         # Update the parameter
-#         grad.data -= lr * grad
+# Train the model using momentum
+train_model(
+    model=model,
+    train_loader=loader_train,
+    test_loader=loader_test,
+    device=device,
+    alpha=momentum_rate,
+    patience=50,
+    wandb_tags=[
+        activation_function_name,
+        f"b={batch_size}",
+        f"alpha={momentum_rate}",
+        "skip_connection_2",
+        "for_report",
+    ],
+    model_name=model_name,
+    track_norms=True,
+)
